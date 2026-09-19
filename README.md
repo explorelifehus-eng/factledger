@@ -6,6 +6,24 @@ For every `(scope, subject, predicate)` there is **exactly one active row**. A n
 **closes** the previous one (`valid_to` + `superseded_by`) — it does not delete it. This way
 contradictory versions can never coexist as equals.
 
+## Why you need this
+
+Agent memory (e.g. Hermes) is **injected into every single turn**, so it has a hard size
+budget — the more it grows, the more it crowds out the actual conversation. factledger
+solves that by separating **what the agent sees** from **what is true**:
+
+- **A compact compiled view** (`compile --budget`) fits the prompt and stays stable as the
+  ledger grows — the rest stays queryable on demand via `show`/`search`, never lost.
+- **One source of truth** for facts that must not drift: prices, access, rules, decisions.
+  When a value changes, the old one is closed, not deleted — so the agent never answers
+  from a stale or contradictory version.
+- **Every fact is sourced and auditable.** Nothing is silently overwritten; the full
+  history is one `history` call away, which makes mistakes visible and reversible.
+
+In short: you get a memory that **stays small enough to fit the prompt** while **never
+forgetting or contradicting itself** — without a vector store, without an LLM in the
+read/write path, and with zero dependencies.
+
 ## Why it exists
 
 mem0 (self-hosted, 65k★) was tested on the scenario "what is the **current** value?"
