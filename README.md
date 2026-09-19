@@ -6,6 +6,8 @@ For every `(scope, subject, predicate)` there is **exactly one active row**. A n
 **closes** the previous one (`valid_to` + `superseded_by`) — it does not delete it. This way
 contradictory versions can never coexist as equals.
 
+> **Docs:** practical usage guide → [`docs/usage.md`](docs/usage.md)
+
 ## Why you need this
 
 Agent memory (e.g. Hermes) is **injected into every single turn**, so it has a hard size
