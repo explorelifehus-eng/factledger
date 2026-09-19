@@ -39,7 +39,12 @@ def load_config(path: str) -> dict:
 
 
 def parse_generated(text: str) -> list[str]:
-    """Γραμμές που ΠΑΡΑΓΑΓΑΜΕ εμείς (αναγνωρίζονται από το πρόθεμα '- ')."""
+    """Γραμμές που ΠΑΡΑΓΑΓΑΜΕ εμείς (αναγνωρίζονται από το πρόθεμα '- ').
+
+    Οι σημειώσεις υπερχείλισης («… (+N ακόμη …)») ΔΕΝ είναι γεγονότα: όταν αλλάζει
+    το N αλλάζουν και αυτές, οπότε θα φαίνονταν «χειροκίνητες αλλαγές» και θα
+    εισάγονταν ως ψευδο-γεγονότα. Εξαιρούνται ρητά.
+    """
     out = []
     for chunk in text.split("§"):
         line = chunk.strip()
@@ -48,12 +53,21 @@ def parse_generated(text: str) -> list[str]:
     return out
 
 
+def is_generated_noise(line: str) -> bool:
+    """Σημείωση του ίδιου του sync (όχι περιεχόμενο του χρήστη)."""
+    s = line.strip()
+    return s.startswith("…") or s.startswith("...") or "ακόμη, δες `factledger show`" in s
+
+
 def hand_edits(existing: str, snapshot: str) -> list[str]:
     """Γραμμές στο υπάρχον αρχείο που ΔΕΝ υπάρχουν στην τελευταία παραγωγή."""
     old = set(parse_generated(snapshot)) if snapshot else set()
-    return [line for line in parse_generated(existing) if line not in old] or \
-           [c.strip() for c in existing.split("§")
-            if c.strip() and not c.strip().startswith("- ") and c.strip() not in (snapshot or "").split("§")]
+    new = [line for line in parse_generated(existing) if line not in old]
+    if new:
+        return new
+    return [c.strip() for c in existing.split("§")
+            if c.strip() and not c.strip().startswith("- ") and not is_generated_noise(c)
+            and c.strip() not in (snapshot or "").split("§")]
 
 
 def import_handnotes(led: Ledger, target: str, lines: list[str]) -> list[str]:
