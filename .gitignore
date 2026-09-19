@@ -1,0 +1,18 @@
+# Δεδομένα του χρήστη: ποτέ στο repo
+*.tsv
+!aliases.example.tsv
+.demo/
+facts.tsv
+MEMORY.*.md
+USER.*.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editor/OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
