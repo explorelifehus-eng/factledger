@@ -127,6 +127,36 @@ Optional `aliases.tsv` (`canonical<TAB>alias1,alias2`) for synonymous predicates
 - It does not extract facts from conversations on its own (only the schema/CLI is provided to do so).
 - It does not solve entity dedup outside keys: synonyms are declared in `aliases.tsv`.
 
+## Related work
+
+Several projects target the same problem — agent memory that stays small, sourced, and
+non-contradictory — but with different approaches:
+
+**Closest in philosophy (structured ledger, not vector):**
+
+| Project | What it does |
+|---|---|
+| [`selfradiance/memledger`](https://github.com/selfradiance/memledger) | Append-only CLI ledger for structured agent memory claims with provenance, confidence, contestability, and immutable history — the closest match |
+| [`hooyao/claude-code-memory`](https://github.com/hooyao/claude-code-memory) | Event-sourced memory engine for Claude Code — auditable, structured, with relationship graphs |
+| [`Yeseh/cortex`](https://github.com/Yeseh/cortex) | Structured agentic memory system |
+| [`Jdawgboo/agent-memory-inspector`](https://github.com/Jdawgboo/agent-memory-inspector) | Inspects structured agent memories for staleness, duplication, and missing provenance |
+
+**The big/well-known ones (vector + knowledge graph, different approach):**
+
+| Project | What it does |
+|---|---|
+| [`mem0ai/mem0`](https://github.com/mem0ai/mem0) | Vector-based memory layer; keeps a superseded value as an equal, which is exactly the failure this project was built to avoid |
+| [`topoteretes/cognee`](https://github.com/topoteretes/cognee) | AI memory platform with a self-hosted knowledge graph |
+| [`getzep/graphiti`](https://github.com/getzep/graphiti) | Real-time temporal knowledge graphs for agents |
+| [`letta-ai/letta`](https://github.com/letta-ai/letta) | Stateful agents with advanced memory (MemGPT) |
+| [`getzep/zep`](https://github.com/getzep/zep) | Long-term memory layer |
+
+None of the big ones do exactly what factledger does: **structured truth with replacement
+as a function of the key, no vector store, and no LLM in the read/write path.** `memledger`
+is the closest in philosophy (append-only, provenance, confidence) but is unproven.
+factledger stands apart for being zero-dependency, offline, and making replacement
+structurally guaranteed rather than a model decision.
+
 ## Tests
 
 ```bash
