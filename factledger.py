@@ -178,8 +178,11 @@ class Ledger:
         return sorted(hits, key=lambda r: (r["valid_to"] != "", r["subject"]))
 
     def compile(self, scopes: list[str] | None = None, budget: int = 800,
-                header: str | None = None) -> str:
-        """Συμπαγής όψη για έγχυση σε prompt. Δεν ξεπερνά ποτέ το budget."""
+                header: str | None = None, max_value: int = 0) -> str:
+        """Συμπαγής όψη για έγχυση σε prompt. Δεν ξεπερνά ποτέ το budget.
+
+        max_value > 0 → κόβει τις μακριές τιμές· η πλήρης μένει στο ledger.
+        """
         ref = today()
         rows = [r for r in self.rows if self.covers(r, ref)]
         if scopes:
@@ -189,7 +192,10 @@ class Ledger:
         lines = [header] if header else []
         used = len(header or "")
         for i, r in enumerate(rows):
-            line = f"- {r['subject']} · {r['predicate']} = {r['value']}"
+            v = r["value"]
+            if max_value and len(v) > max_value:
+                v = v[: max_value - 1].rstrip() + "…"
+            line = f"- {r['subject']} · {r['predicate']} = {v}"
             if used + len(line) + 1 > budget:
                 lines.append(f"… (+{len(rows) - i} ακόμη, δες `factledger show`)")
                 break
