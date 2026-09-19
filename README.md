@@ -1,69 +1,67 @@
 # factledger — typed facts with structural truth
 
-Μνήμη για agents/ανθρώπους όπου **η αλήθεια επιβάλλεται από τη δομή, όχι από κρίση μοντέλου**.
+Memory for agents/humans where **truth is enforced by structure, not by model judgment**.
 
-Για κάθε `(scope, subject, predicate)` υπάρχει **ακριβώς μία ενεργή γραμμή**. Νέα τιμή
-**κλείνει** την προηγούμενη (`valid_to` + `superseded_by`) — δεν τη σβήνει. Έτσι δεν
-μπορούν να συνυπάρξουν αντιφατικές εκδοχές ως ισότιμες.
+For every `(scope, subject, predicate)` there is **exactly one active row**. A new value
+**closes** the previous one (`valid_to` + `superseded_by`) — it does not delete it. This way
+contradictory versions can never coexist as equals.
 
-## Γιατί υπάρχει
+## Why it exists
 
-Δοκιμάστηκε το mem0 (self-hosted, 65k★) στο σενάριο «ποια είναι η **τρέχουσα** τιμή;»
-μετά από διόρθωση. Αποτέλεσμα: η **ξεπερασμένη** τιμή επέστρεψε **πρώτη** (score 0,79)
-και η σωστή τρίτη (0,77) — ο UPDATE στο αυτόματο extraction ενεργοποιούνταν μόνο ως ADD.
-Η αποτυχία δεν ήταν του embedding: ήταν ότι η απόφαση «αντικαθίσταται;» δινόταν σε LLM.
+mem0 (self-hosted, 65k★) was tested on the scenario "what is the **current** value?"
+after a correction. Result: the **superseded** value came back **first** (score 0.79)
+and the correct one third (0.77) — the UPDATE in automatic extraction only fired as an ADD.
+The failure was not the embedding: it was that the "is it replaced?" decision was left to an LLM.
 
-Εδώ η αντικατάσταση είναι **λειτουργία του κλειδιού**, όχι απόφαση: το λάθος δεν μπορεί
-να συμβεί δομικά.
+Here replacement is a **function of the key**, not a decision: the error cannot happen structurally.
 
-## Χρήση
+## Usage
 
 ```bash
 python factledger.py add --scope silktales --subject product.70x70 --predicate cost \
-    --value 22 --source "τιμοκατάλογος 2026-09" --confidence stated
+    --value 22 --source "pricelist 2026-09" --confidence stated
 
-python factledger.py show --subject product.70x70          # τρέχουσα αλήθεια
-python factledger.py show --subject product.70x70 --as-of 2026-03-01   # τι ίσχυε τότε
-python factledger.py history --subject product.70x70       # τι άλλαξε πότε και με ποια πηγή
+python factledger.py show --subject product.70x70          # current truth
+python factledger.py show --subject product.70x70 --as-of 2026-03-01   # what held then
+python factledger.py history --subject product.70x70       # what changed when and with which source
 python factledger.py search kraken
-python factledger.py compile --budget 600 --out MEMORY.md  # συμπαγής όψη για prompt
-python factledger.py check                                  # έλεγχος ακεραιότητας
+python factledger.py compile --budget 600 --out MEMORY.md  # compact view for a prompt
+python factledger.py check                                  # integrity check
 python factledger.py stats
 ```
 
-`--source` είναι **υποχρεωτικό**: γεγονός χωρίς πηγή δεν γράφεται.
+`--source` is **mandatory**: a fact without a source is not written.
 
-## Ο βρόχος: εξαγωγή → ledger → αρχεία μνήμης
+## The loop: extract → ledger → memory files
 
-Δύο εργαλεία κλείνουν τον κύκλο (και τα δύο stdlib):
+Two tools close the cycle (both stdlib):
 
 ```bash
-# 1. Εξαγωγή διαρκών γεγονότων από transcripts (SQLite) → ledger
+# 1. Extract durable facts from transcripts (SQLite) → ledger
 python extract.py --config extract.json          # dry-run
-python extract.py --config extract.json --apply  # εγγραφή + checkpoint
+python extract.py --config extract.json --apply  # write + checkpoint
 
-# 2. Παραγωγή αρχείων μνήμης από το ledger
+# 2. Generate memory files from the ledger
 python sync_memory.py --config sync.json         # dry-run
-python sync_memory.py --config sync.json --apply # εγγραφή με αντίγραφα
+python sync_memory.py --config sync.json --apply # write with backups
 ```
 
-**Γιατί είναι ασφαλή** (μηχανισμοί, όχι ελπίδα):
+**Why they are safe** (mechanisms, not hope):
 
-| Κίνδυνος | Τι τον σταματά |
+| Risk | What stops it |
 |---|---|
-| Παραίσθηση LLM | Κάθε γεγονός απαιτεί **αυτολεξεί quote** από την πηγή· ό,τι δεν βρίσκεται απορρίπτεται |
-| Διαρροή μυστικών | Regex σε κλειδιά/tokens (value + quote) → απόρριψη |
-| «Γεγονότα» που είναι εντολές | Δομικό φίλτρο (predicates + πρόθεμα τιμής) **και** few-shot· ο κώδικας υπερισχύει του prompt |
-| Διπλότυπα | Checkpoint στο τελευταίο id + ίδια τιμή = «χωρίς αλλαγή» |
-| Χαμένη χειροκίνητη αλλαγή | Αντίγραφο πριν από κάθε εγγραφή + εντοπισμός απόκλισης από το snapshot → εισάγεται ως γεγονός |
-| Υπέρβαση prompt | `budget` + ποσοστώσεις ανά scope + ρητή `order` σημασίας: το prompt μένει σταθερό όσο το ledger μεγαλώνει |
+| LLM hallucination | Every fact requires a **verbatim quote** from the source; anything not found is rejected |
+| Secret leakage | Regex over keys/tokens (value + quote) → rejection |
+| "Facts" that are commands | Structural filter (predicates + value prefix) **and** few-shot; code overrides the prompt |
+| Duplicates | Checkpoint at the last id + same value = "no change" |
+| Lost manual change | Backup before every write + divergence detection from the snapshot → inserted as a fact |
+| Prompt overflow | `budget` + per-scope quotas + explicit `order` of importance: the prompt stays stable as the ledger grows |
 
-Οι δύο διαφορές από τα vector-based συστήματα μνήμης: (α) η αντικατάσταση είναι
-**λειτουργία κλειδιού**, όχι απόφαση μοντέλου· (β) τίποτα δεν διαγράφεται, άρα κάθε
-λάθος μένει ορατό και αναστρέψιμο.
+The two differences from vector-based memory systems: (a) replacement is a **key function**,
+not a model decision; (b) nothing is ever deleted, so every mistake stays visible and reversible.
 
-**Παράδειγμα ενσωμάτωσης σε agent** (ο κύκλος: η μνήμη γίνεται αρχείο που ο agent
-διαβάζει σε κάθε turn, αλλά παράγεται από το ledger):
+**Example agent integration** (the cycle: memory becomes a file the agent reads every turn,
+but it is produced by the ledger):
 
 ```json
 {
@@ -76,40 +74,40 @@ python sync_memory.py --config sync.json --apply # εγγραφή με αντί�
 }
 ```
 
-## Σχήμα
+## Schema
 
-| στήλη | σημασία |
+| column | meaning |
 |---|---|
-| `id` | `f00001`… σταθερό |
-| `scope` | `user` / `profile` / `project` / `session` — το «ανά ποιον» της ανάκτησης |
-| `subject` | το αντικείμενο (`product.70x70`, `kraken`) |
-| `predicate` | η ιδιότητα (`cost`, `access`) — περνά από alias map |
-| `value` | η τιμή |
-| `valid_from` / `valid_to` | διάστημα ισχύος· κενό `valid_to` = ανοιχτή |
-| `superseded_by` | ποια γραμμή την αντικατέστησε |
-| `source` | από πού προέκυψε (υποχρεωτικό) |
-| `confidence` | `stated` > `derived` > `assumed` (σειρά στο compile) |
+| `id` | `f00001`… stable |
+| `scope` | `user` / `profile` / `project` / `session` — the "per whom" of retrieval |
+| `subject` | the object (`product.70x70`, `kraken`) |
+| `predicate` | the property (`cost`, `access`) — passes through the alias map |
+| `value` | the value |
+| `valid_from` / `valid_to` | validity interval; empty `valid_to` = open |
+| `superseded_by` | which row replaced it |
+| `source` | where it came from (mandatory) |
+| `confidence` | `stated` > `derived` > `assumed` (order in compile) |
 
-Δεδομένα: **ένα TSV**, ανθρωπίνως αναγνώσιμο, grep-άσιμο, με καθαρό `git diff`.
-Προαιρετικό `aliases.tsv` (`canonical<TAB>alias1,alias2`) για συνώνυμα predicates.
+Data: **a single TSV**, human-readable, grep-able, with clean `git diff`.
+Optional `aliases.tsv` (`canonical<TAB>alias1,alias2`) for synonymous predicates.
 
-## Σχεδιαστικές επιλογές
+## Design choices
 
-- **Χρονικά διαστήματα, όχι «τελευταία εγγραφή»** — η `show --as-of` απαντά τι ίσχυε τότε
-  (απαραίτητο για ελέγχους/αναδρομικές ερωτήσεις).
-- **Προγραμματισμένη αλλαγή** δεν κλείνει την τρέχουσα αλήθεια πριν έρθει η ώρα της.
-- **`compile` με όριο χαρακτήρων** — μπαίνει σε prompt χωρίς να το φουσκώνει· το υπόλοιπο
-  μένει προσβάσιμο με `show`/`search`.
-- **Μηδέν εξαρτήσεις** (stdlib), μηδέν δίκτυο, μηδέν LLM σε read/write· LLM χρειάζεται
-  μόνο αν κάποιος θέλει αυτόματη εξαγωγή γεγονότων από transcripts (εκτός πυρήνα).
-- **Το λάθος μένει ορατό**: τίποτα δεν διαγράφεται, μόνο κλείνει — audit trail δωρεάν.
+- **Time intervals, not "last record"** — `show --as-of` answers what held then
+  (necessary for audits/retrospective queries).
+- **Scheduled change** does not close the current truth before its time.
+- **`compile` with a character budget** — fits in a prompt without bloating it; the rest
+  stays reachable via `show`/`search`.
+- **Zero dependencies** (stdlib), zero network, zero LLM on read/write; an LLM is needed
+  only if you want automatic fact extraction from transcripts (outside the core).
+- **Mistakes stay visible**: nothing is deleted, only closed — free audit trail.
 
-## Τι ΔΕΝ είναι
+## What it is NOT
 
-- Δεν κάνει σημασιολογική/vector αναζήτηση σε ελεύθερο κείμενο — γι' αυτό υπάρχει
-  ξεχωριστό σύστημα (π.χ. GraphRAG). **Ledger = αλήθεια, vector store = ομοιότητα.**
-- Δεν εξάγει μόνο του γεγονότα από συνομιλίες (παρέχεται μόνο το σχήμα/CLI για να γίνει).
-- Δεν λύνει το dedup οντοτήτων έξω από κλειδιά: τα συνώνυμα τα δηλώνεις στο `aliases.tsv`.
+- It does not do semantic/vector search over free text — that is what a separate system
+  (e.g. GraphRAG) is for. **Ledger = truth, vector store = similarity.**
+- It does not extract facts from conversations on its own (only the schema/CLI is provided to do so).
+- It does not solve entity dedup outside keys: synonyms are declared in `aliases.tsv`.
 
 ## Tests
 
@@ -117,9 +115,9 @@ python sync_memory.py --config sync.json --apply # εγγραφή με αντί�
 python -m unittest discover -s tests -v
 ```
 
-Το κρίσιμο: `test_supersede_closes_previous` — η νέα τιμή κλείνει την παλιά, μία ενεργή
-αλήθεια, πλήρες ιστορικό.
+The critical one: `test_supersede_closes_previous` — the new value closes the old one,
+one active truth, full history.
 
-## Άδεια
+## License
 
-MIT — βλ. `LICENSE`.
+MIT — see `LICENSE`.
