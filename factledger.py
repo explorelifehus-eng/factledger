@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import json
 import os
 import sys
+import time
 import unicodedata
 
 FIELDS = ("id", "scope", "subject", "predicate", "value",
@@ -81,7 +83,17 @@ class Ledger:
             w.writeheader()
             for r in self.rows:
                 w.writerow(r)
-        os.replace(tmp, self.path)
+        # Το ledger ζει μέσα σε Obsidian vault: AV/indexer κρατούν στιγμιαίο lock στο
+        # rename και το os.replace σκάει με WinError 5 στη μέση μιας παρτίδας που έχει
+        # ήδη πληρωθεί σε tokens. Bounded retry — το σφάλμα είναι παροδικό, όχι λογικό.
+        for attempt in range(6):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.25 * (attempt + 1))
 
     # ── πυρήνας ────────────────────────────────────────────────────────────
     def _next_id(self) -> str:
@@ -178,17 +190,22 @@ class Ledger:
         return sorted(hits, key=lambda r: (r["valid_to"] != "", r["subject"]))
 
     def compile(self, scopes: list[str] | None = None, budget: int = 800,
-                header: str | None = None, max_value: int = 0) -> str:
+                header: str | None = None, max_value: int = 0,
+                order: str = "confidence") -> str:
         """Συμπαγής όψη για έγχυση σε prompt. Δεν ξεπερνά ποτέ το budget.
 
         max_value > 0 → κόβει τις μακριές τιμές· η πλήρης μένει στο ledger.
+        order="recency" → τα πρόσφατα πρώτα, ώστε να επιβιώνουν στο budget.
         """
         ref = today()
         rows = [r for r in self.rows if self.covers(r, ref)]
         if scopes:
             want = {norm(s) for s in scopes}
             rows = [r for r in rows if norm(r["scope"]) in want]
-        rows.sort(key=lambda r: (CONF_RANK.get(r["confidence"], 9), r["scope"], r["subject"]))
+        if order == "recency":
+            rows.sort(key=lambda r: (r["valid_from"] or "", r["scope"], r["subject"]), reverse=True)
+        else:
+            rows.sort(key=lambda r: (CONF_RANK.get(r["confidence"], 9), r["scope"], r["subject"]))
         lines = [header] if header else []
         used = len(header or "")
         for i, r in enumerate(rows):
@@ -202,6 +219,47 @@ class Ledger:
             lines.append(line)
             used += len(line) + 1
         return "\n".join(lines)
+
+    def stale(self, days: int = 30, scopes: list[str] | None = None,
+              ref: str | None = None) -> list[tuple[dict, int]]:
+        """Ενεργά facts των οποίων η valid_from είναι παλαιότερη από `days`.
+
+        Επιστρέφει [(row, ηλικία_σε_μέρες)] από τα πιο παλιά πρώτα.
+        Δεν αλλάζει τίποτα· δείχνει τι θέλει επανέλεγχο.
+        """
+        ref = ref or today()
+        today_dt = dt.date.fromisoformat(ref)
+        want = {norm(s) for s in scopes} if scopes else None
+        out: list[tuple[dict, int]] = []
+        for r in self.rows:
+            if not self.covers(r, ref):
+                continue
+            if want and norm(r["scope"]) not in want:
+                continue
+            try:
+                age = (today_dt - dt.date.fromisoformat(r["valid_from"])).days
+            except (ValueError, TypeError):
+                continue
+            if age >= days:
+                out.append((r, age))
+        out.sort(key=lambda x: (-x[1], x[0]["scope"], x[0]["subject"]))
+        return out
+
+    def export(self, scopes: list[str] | None = None,
+               include_history: bool = False) -> list[dict]:
+        """Δομημένη εξαγωγή για άλλα εργαλεία (watchdog, reports)."""
+        want = {norm(s) for s in scopes} if scopes else None
+        rows = self.rows if include_history else [r for r in self.rows if r["valid_to"] == ""]
+        return [
+            {
+                "id": r["id"], "scope": r["scope"], "subject": r["subject"],
+                "predicate": r["predicate"], "value": r["value"],
+                "confidence": r["confidence"], "source": r["source"],
+                "valid_from": r["valid_from"], "valid_to": r["valid_to"],
+                "superseded_by": r["superseded_by"],
+            }
+            for r in rows if not want or norm(r["scope"]) in want
+        ]
 
     def check(self) -> list[str]:
         """Έλεγχος ακεραιότητας. Κενή λίστα = υγιές."""
@@ -288,6 +346,16 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--budget", type=int, default=800)
     c.add_argument("--header", default="")
     c.add_argument("--out", default="")
+    c.add_argument("--order", choices=("confidence", "recency"), default="confidence")
+
+    st = sub.add_parser("stale", help="ενεργά facts παλαιότερα από N ημέρες")
+    st.add_argument("--days", type=int, default=30)
+    st.add_argument("--scopes", default="")
+
+    ex = sub.add_parser("export", help="δομημένη εξαγωγή σε JSON")
+    ex.add_argument("--scopes", default="")
+    ex.add_argument("--all", action="store_true", dest="include_history")
+    ex.add_argument("--out", default="")
 
     sub.add_parser("check", help="έλεγχος ακεραιότητας")
     sub.add_parser("stats", help="σύνολα")
@@ -327,11 +395,30 @@ def main(argv=None) -> int:
             print(f"{r['id']}  {r['subject']} · {r['predicate']} = {r['value']}{flag}")
     elif args.cmd == "compile":
         scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
-        text = led.compile(scopes or None, args.budget, args.header or None)
+        text = led.compile(scopes or None, args.budget, args.header or None,
+                           order=args.order)
         if args.out:
             with open(args.out, "w", encoding="utf-8") as f:
                 f.write(text + "\n")
             print(f"γράφτηκε: {args.out} ({len(text)} χαρ.)")
+        else:
+            print(text)
+    elif args.cmd == "stale":
+        scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
+        rows = led.stale(args.days, scopes or None)
+        if not rows:
+            print(f"κανένα ενεργό fact παλαιότερο από {args.days} ημέρες ✔")
+        for r, age in rows:
+            print(f"{r['id']}  {r['scope']}/{r['subject']} · {r['predicate']} = "
+                  f"{r['value']}  [{r['confidence']}] από {r['valid_from']} ({age} ημ.)")
+    elif args.cmd == "export":
+        scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
+        data = led.export(scopes or None, args.include_history)
+        text = json.dumps(data, ensure_ascii=False, indent=1)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+            print(f"γράφτηκε: {args.out} ({len(data)} facts)")
         else:
             print(text)
     elif args.cmd == "check":

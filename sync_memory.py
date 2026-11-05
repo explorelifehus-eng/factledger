@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from factledger import Ledger, LedgerError  # noqa: E402
 
 SEP = "\n§\n"
+SEP_LEN = len(SEP)  # ο διαχωριστής μετράει στο budget: αλλιώς το αρχείο βγαίνει μεγαλύτερο απ' όσο δηλώνει
 
 
 def load_config(path: str) -> dict:
@@ -106,29 +107,51 @@ def render(led: Ledger, target: dict) -> str:
         return (len(order), s)
 
     lines = [header] if header else []
-    used = len(header) if header else 0
+    used = len(header) + SEP_LEN if header else 0
     carry = 0
-    for sc in scopes or []:
-        allowed = min(int(quotas.get(sc, default_q)) + carry, budget - used)
+    for idx, sc in enumerate(scopes or []):
+        # Κρατάμε χώρο για την τελική σημείωση «λείπουν scopes», αλλιώς το αρχείο
+        # τελειώνει σιωπηλά και ο αναγνώστης νομίζει ότι τα είδε όλα.
+        reserve = 60 if idx < len(scopes) - 1 else 0
+        allowed = min(int(quotas.get(sc, default_q)) + carry, budget - used - reserve)
         if allowed <= 60:
-            lines.append("… (τα υπόλοιπα scopes εκτός budget — `factledger show`)")
+            note = "… (λείπουν τα υπόλοιπα scopes — `factledger show`)"
+            if used + len(note) + SEP_LEN <= budget:
+                lines.append(note)
             break
         rows = sorted(led.active(scope=sc), key=lambda r: rank(r["subject"]))
-        spent, shown = 0, 0
+        sc_lines, spent, shown = [], 0, 0
         for r in rows:
             v = r["value"]
             if max_value and len(v) > max_value:
                 v = v[: max_value - 1].rstrip() + "…"
             line = f"- {r['subject']} · {r['predicate']} = {v}"
-            if spent + len(line) + 1 > allowed:
+            if spent + len(line) + SEP_LEN > allowed:
                 break
-            lines.append(line)
-            spent += len(line) + 1
+            sc_lines.append(line)
+            spent += len(line) + SEP_LEN
             shown += 1
+
+        def note_for(n_left: int) -> str:
+            return f"… (+{n_left} ακόμη στο {sc} — `factledger show --scope {sc}`)"
+
+        def fits(note: str) -> bool:
+            return (spent + len(note) + SEP_LEN <= allowed
+                    and used + spent + len(note) + SEP_LEN <= budget)
+
         if shown < len(rows):
-            note = f"… (+{len(rows) - shown} ακόμη, δες `factledger show`)"
-            lines.append(note)
-            spent += len(note) + 1
+            # Η σημείωση υπερχείλισης προηγείται της τελευταίας γραμμής: χωρίς αυτήν
+            # ο αναγνώστης διαβάζει το αρχείο σαν να είδε ΟΛΗ τη μνήμη. Θυσιάζουμε
+            # γραμμές μέχρι να χωρέσει (μία τουλάχιστον παραμένει, αλλιώς το scope
+            # θα έμοιαζε άδειο).
+            while sc_lines and not fits(note_for(len(rows) - shown)):
+                spent -= len(sc_lines.pop()) + SEP_LEN
+                shown -= 1
+            note = note_for(len(rows) - shown)
+            if fits(note):
+                sc_lines.append(note)
+                spent += len(note) + SEP_LEN
+        lines.extend(sc_lines)
         used += spent
         carry = max(0, allowed - spent)
     if not scopes:

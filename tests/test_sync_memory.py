@@ -66,6 +66,29 @@ class TestRenderQuotas(unittest.TestCase):
                                 "quotas": {"sc": 150, "other": 200}})
         self.assertIn("x", out)   # το μικρό scope επιβιώνει χάρη στην ποσόστωση
 
+    def test_budget_counts_the_separators(self):
+        """Το όριο μετρά ΚΑΙ τα `§`.
+
+        Αλλιώς το αρχείο βγαίνει μεγαλύτερο απ' όσο δηλώνει (2 χαρ. ανά γραμμή) και
+        ξεπερνά το όριο της μνήμης του Hermes χωρίς κανένα σημάδι.
+        """
+        for budget in (300, 500):
+            out = render(self.led, {"scopes": ["sc"], "budget": budget})
+            self.assertLessEqual(len(out), budget + 1, f"budget={budget}")
+
+    def test_overflow_note_names_the_scope(self):
+        """Η σημείωση λέει ΠΟΙΟ scope κόπηκε — αλλιώς διαβάζεται σαν «τέλος αρχείου»."""
+        out = render(self.led, {"scopes": ["sc"], "budget": 300, "scope_quota": 300})
+        self.assertIn("στο sc", out)
+        self.assertIn("`factledger show --scope sc`", out)
+
+    def test_skipped_scopes_are_announced(self):
+        """Όταν το budget εξαντληθεί, το αρχείο το δηλώνει αντί να τελειώνει σιωπηλά."""
+        self.led.add("other", "x", "p", "value", "src")
+        out = render(self.led, {"scopes": ["sc", "other"], "budget": 250,
+                                "quotas": {"sc": 250, "other": 0}})
+        self.assertIn("λείπουν", out)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

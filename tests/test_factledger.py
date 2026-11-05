@@ -130,5 +130,34 @@ class TestPersistence(Base):
             Ledger(self.db)
 
 
+class TestSubjectSpecificity(Base):
+    """Task 3: «ένα row per key» δεν πρέπει να τρώει αλήθεια. Ίδια έννοια σε
+    διαφορετικό πλαίσιο = διαφορετικό κλειδί = ΚΑΙ ΟΙ ΔΥΟ ενεργές."""
+
+    def test_two_contexts_stay_active(self):
+        self.led.add("crypto", "trade.sl.cex", "rule", "1.5% κάτω από entry", "src")
+        self.led.add("crypto", "trade.sl.dex", "rule", "trailing 8% μετά το TP1", "src")
+        act = self.led.active()
+        self.assertEqual(len(act), 2)
+        self.assertEqual(sorted(r["subject"] for r in act),
+                         ["trade.sl.cex", "trade.sl.dex"])
+        self.assertEqual(sorted(r["value"] for r in act),
+                         ["1.5% κάτω από entry", "trailing 8% μετά το TP1"])
+
+    def test_generic_key_collision_is_what_loses_truth(self):
+        """Το αντίστροφο (ο έλεγχος): με κοινό κλειδί η δεύτερη αλήθεια κλείνει την πρώτη."""
+        self.led.add("crypto", "trade.sl", "rule", "1.5% κάτω από entry", "src")
+        self.led.add("crypto", "trade.sl", "rule", "trailing 8% μετά το TP1", "src")
+        act = self.led.active()
+        self.assertEqual(len(act), 1)
+        self.assertEqual(act[0]["value"], "trailing 8% μετά το TP1")
+        self.assertEqual(len(self.led.history("trade.sl")), 2)   # η παλιά σώζεται ως ιστορικό
+
+    def test_exit_contexts_independent(self):
+        self.led.add("crypto", "exit.tp.dex", "target", "40/40/20", "src")
+        self.led.add("crypto", "exit.tp.cex", "target", "33/33/34", "src")
+        self.assertEqual(len(self.led.active()), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
