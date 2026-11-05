@@ -5,6 +5,7 @@ description: >-
   agent actually knows, with a supersede history instead of overwrites. Add,
   show, search, check integrity, list stale facts, or export JSON.
 license: MIT
+requires_hermes: ">=0.19"
 homepage: https://github.com/explorelifehus-eng/factledger
 author: GiaVaSwNi
 tags:
