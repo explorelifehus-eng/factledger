@@ -1,0 +1,24 @@
+name: factledger
+version: "1.0.0"
+description: >-
+  Typed-facts ledger with structural truth — record, search, and audit facts the
+  agent actually knows, with a supersede history instead of overwrites. Add,
+  show, search, check integrity, list stale facts, or export JSON.
+license: MIT
+homepage: https://github.com/explorelifehus-eng/factledger
+author: GiaVaSwNi
+tags:
+  - memory
+  - facts
+  - ledger
+  - truth
+provides_tools:
+  - factledger_add
+  - factledger_show
+  - factledger_search
+  - factledger_history
+  - factledger_compile
+  - factledger_stale
+  - factledger_export
+  - factledger_check
+  - factledger_stats
