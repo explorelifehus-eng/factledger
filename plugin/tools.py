@@ -14,12 +14,43 @@ import json
 from pathlib import Path
 
 # → repo root: το standalone factledger ζει ένα επίπεδο πάνω από το plugin/.
-# Ο μόνος τρόπος να το βρει ο loader είναι sys.path — δεν κυκλοφορούμε αντίγραφο.
+# Το plugin όμως εγκαθίσταται ΜΟΝΟ με τα περιεχόμενά του (catalog: subdir=plugin),
+# γι' αυτό κουβαλά αντίγραφο στο plugin/factledger.py — παράγεται από
+# scripts/sync_plugin_copy.py και φυλάσσεται από tests/test_plugin_packaging.py.
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-import factledger as fl  # noqa: E402
+
+def _load_standalone():
+    """Φόρτωσε το standalone `factledger.py` από διαδρομή — ΟΧΙ με `import factledger`.
+
+    Το plugin εγκαθίσταται ως πακέτο με όνομα `factledger`, άρα βρίσκεται στο
+    sys.modules: `import factledger` επιστρέφει το ίδιο το plugin (χωρίς κλάση
+    Ledger) αντί για το standalone module. Γι' αυτό το φορτώνουμε από αρχείο με
+    μοναδικό όνομα module.
+    """
+    import importlib.util as _ilu
+
+    candidates = []
+    env_path = os.environ.get("FACTLEDGER_PY")
+    if env_path:
+        candidates.append(Path(env_path))
+    # 1) δίπλα στο repo root (live source στο checkout) 2) συσκευασμένο με το plugin
+    candidates += [Path(_REPO_ROOT) / "factledger.py",
+                   Path(__file__).resolve().parent / "factledger.py"]
+    for path in candidates:
+        if path.is_file():
+            spec = _ilu.spec_from_file_location("_factledger_standalone", str(path))
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError(
+        "factledger.py not found (searched: " + ", ".join(str(c) for c in candidates) + ")"
+    )
+
+
+fl = _load_standalone()  # noqa: E402
 
 # Ο path του ledger. Default: plugin_data_dir (εγγυημένος επιβιώσιμος, ακολουθεί
 # το ενεργό profile). Έλεγχος: FACTLEDGER_DB env ή ~/.factledger.
