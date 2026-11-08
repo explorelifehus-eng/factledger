@@ -1,5 +1,6 @@
 name: factledger
 version: "1.0.0"
+manifest_version: 2
 description: >-
   Typed-facts ledger with structural truth — record, search, and audit facts the
   agent actually knows, with a supersede history instead of overwrites. Add,
@@ -13,6 +14,12 @@ tags:
   - facts
   - ledger
   - truth
+config_schema:
+  db_path:
+    type: str
+    description: >-
+      Optional custom path to the ledger facts.tsv. Defaults to the per-profile
+      plugin data dir (<hermes home>/plugin-data/factledger/facts.tsv).
 provides_tools:
   - factledger_add
   - factledger_show

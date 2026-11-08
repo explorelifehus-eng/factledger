@@ -45,10 +45,12 @@ Every tool returns a JSON string (always, including on error — never raises).
 
 ## Data location
 
-The ledger lives at `~/.factledger/facts.tsv` by default. Set the
-`FACTLEDGER_DB` environment variable to point it anywhere (e.g. inside an
-Obsidian vault) — the atomic replace includes a bounded retry for transient
-filesystem locks.
+The ledger lives at `<hermes home>/plugin-data/factledger/facts.tsv` by default
+— inside the active profile's Hermes home, so each profile keeps its own
+ledger. To point it anywhere else (e.g. inside an Obsidian vault), set the
+`db_path` setting: Plugins hub → factledger → settings, or
+`plugins.entries.factledger.settings.db_path` in `config.yaml`. The atomic
+replace includes a bounded retry for transient filesystem locks.
 
 ## Conventions
 

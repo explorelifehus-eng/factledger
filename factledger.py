@@ -70,7 +70,7 @@ class Ledger:
             rdr = csv.DictReader(f, delimiter="\t")
             missing = [c for c in FIELDS if c not in (rdr.fieldnames or [])]
             if missing:
-                raise LedgerError(f"λείπουν στήλες στο {self.path}: {missing}")
+                raise LedgerError(f"missing columns in {self.path}: {missing}")
             for r in rdr:
                 self.rows.append({k: (r.get(k) or "") for k in FIELDS})
 
@@ -114,11 +114,11 @@ class Ledger:
             source: str, confidence: str = "stated", valid_from: str | None = None,
             allow_same: bool = False) -> dict:
         if not source or not str(source).strip():
-            raise LedgerError("χωρίς πηγή (source) δεν γράφεται γεγονός — ο κανόνας είναι ρητός")
+            raise LedgerError("a fact is not written without a source — the rule is explicit")
         if norm(confidence) not in CONFIDENCE:
-            raise LedgerError(f"confidence πρέπει ένα από {CONFIDENCE}")
+            raise LedgerError(f"confidence must be one of {CONFIDENCE}")
         if not norm(scope) or not norm(subject) or not norm(predicate):
-            raise LedgerError("scope/subject/predicate δεν μπορούν να είναι κενά")
+            raise LedgerError("scope/subject/predicate cannot be empty")
         predicate = self._canon_predicate(predicate)
         vfrom = valid_from or today()
         k = (norm(scope), norm(subject), predicate)

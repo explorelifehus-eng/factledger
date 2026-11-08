@@ -8,61 +8,61 @@ handlers στο Hermes plugin surface.
 """
 from __future__ import annotations
 
-import os
-import sys
 import json
 from pathlib import Path
 
-# → repo root: το standalone factledger ζει ένα επίπεδο πάνω από το plugin/.
-# Το plugin όμως εγκαθίσταται ΜΟΝΟ με τα περιεχόμενά του (catalog: subdir=plugin),
-# γι' αυτό κουβαλά αντίγραφο στο plugin/factledger.py — παράγεται από
-# scripts/sync_plugin_copy.py και φυλάσσεται από tests/test_plugin_packaging.py.
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+# Το standalone factledger.py κουβαλιέται ΜΕΣΑ στο plugin (catalog: subdir=plugin),
+# γιατί η εγκατάσταση παίρνει ΜΟΝΟ τα περιεχόμενα του plugin/. Το αντίγραφο
+# παράγεται από scripts/sync_plugin_copy.py και φυλάσσεται από tests/test_plugin_packaging.py.
+_CTX = None  # το ctx του plugin — ορίζεται από το register() στο __init__.py
+
+
+def set_ctx(ctx) -> None:
+    """Αποθηκεύει το plugin ctx, ώστε τα tools να διαβάζουν config στο call time."""
+    global _CTX
+    _CTX = ctx
 
 
 def _load_standalone():
-    """Φόρτωσε το standalone `factledger.py` από διαδρομή — ΟΧΙ με `import factledger`.
+    """Φόρτωσε το συσκευασμένο `factledger.py` ΜΟΝΟ από δίπλα στο tools.py.
 
-    Το plugin εγκαθίσταται ως πακέτο με όνομα `factledger`, άρα βρίσκεται στο
-    sys.modules: `import factledger` επιστρέφει το ίδιο το plugin (χωρίς κλάση
-    Ledger) αντί για το standalone module. Γι' αυτό το φορτώνουμε από αρχείο με
-    μοναδικό όνομα module.
+    Φορτώνεται με μοναδικό module name — ΟΧΙ με `import factledger`, που θα
+    επέστρεφε το ίδιο το plugin package (χωρίς κλάση Ledger) αντί για το
+    standalone module. Ψάχνει μόνο το bundled αντίγραφο: ό,τι άλλο (FACTLEDGER_PY
+    ή το γονικό dir) θα έτρεχε μη-ελεγμένο κώδικα μετά την εγκατάσταση.
     """
     import importlib.util as _ilu
 
-    candidates = []
-    env_path = os.environ.get("FACTLEDGER_PY")
-    if env_path:
-        candidates.append(Path(env_path))
-    # 1) δίπλα στο repo root (live source στο checkout) 2) συσκευασμένο με το plugin
-    candidates += [Path(_REPO_ROOT) / "factledger.py",
-                   Path(__file__).resolve().parent / "factledger.py"]
-    for path in candidates:
-        if path.is_file():
-            spec = _ilu.spec_from_file_location("_factledger_standalone", str(path))
-            mod = _ilu.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod
-    raise ImportError(
-        "factledger.py not found (searched: " + ", ".join(str(c) for c in candidates) + ")"
-    )
+    path = Path(__file__).resolve().parent / "factledger.py"
+    if not path.is_file():
+        raise ImportError(f"factledger.py not found next to tools.py ({path})")
+    spec = _ilu.spec_from_file_location("_factledger_standalone", str(path))
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 fl = _load_standalone()  # noqa: E402
 
-# Ο path του ledger. Default: plugin_data_dir (εγγυημένος επιβιώσιμος, ακολουθεί
-# το ενεργό profile). Έλεγχος: FACTLEDGER_DB env ή ~/.factledger.
-DB_ENV = os.environ.get("FACTLEDGER_DB")
-if DB_ENV:
-    _DB_PATH = DB_ENV
-else:
-    _DB_PATH = os.path.join(str(Path.home()), ".factledger", "facts.tsv")
+
+def _db_path() -> Path:
+    """Η διαδρομή του ledger, ΛΥΜΕΝΗ ΣΤΟ CALL TIME.
+
+    Πρώτα το `db_path` από το config_schema (plugins.entries.factledger.settings),
+    αλλιώς το per-profile plugin data dir — ΠΟΤΕ το κοινό ~/.factledger, που θα
+    μοιραζόταν facts ανάμεσα σε profiles. Ο import είναι lazy ώστε το probe
+    εγκατάστασης (που φορτώνει το tools.py μόνο του) να μην απαιτεί το Hermes.
+    """
+    if _CTX is not None:
+        custom = _CTX.get_config("db_path")
+        if custom:
+            return Path(str(custom))
+    from plugins.plugin_storage import plugin_data_dir
+    return plugin_data_dir("factledger") / "facts.tsv"
 
 
 def _ledger():
-    return fl.Ledger(_DB_PATH)
+    return fl.Ledger(str(_db_path()))
 
 
 def _ok(data) -> str:

@@ -3,16 +3,10 @@
 """Σχήματα (JSON Schema) για τα tools του plugin factledger.
 
 Κάθε σχήμα είναι {name, description, parameters}: το parameters είναι το
-JSON Schema object που καταναλώνει ο model - δηλαδή πώς καλείται το tool.
+JSON Schema object που καταναλώνει ο model — δηλαδή πώς καλείται το tool.
+Οι περιγραφές είναι αγγλικές: είναι το κείμενο που διαβάζει το μοντέλο.
 """
 from __future__ import annotations
-
-_S = {
-    "type": "object",
-    "properties": {
-        "scope": {"type": "string", "description": "Προαιρετικός περιορισμός σε ένα scope (π.χ. silktales)."},
-    },
-}
 
 
 def _params(props: dict, required: list[str] | None = None) -> dict:
@@ -23,74 +17,74 @@ def _params(props: dict, required: list[str] | None = None) -> dict:
 
 
 ADD_PROPS = {
-    "scope": {"type": "string", "description": "Scope (χώρος ονομάτων) του γεγονότος — υποχρεωτικό."},
-    "subject": {"type": "string", "description": "Θέμα του γεγονότος (π.χ. competitor.x · case.y)."},
-    "predicate": {"type": "string", "description": "Ιδιότητα (π.χ. price, status, decision)."},
-    "value": {"type": "string", "description": "Η τιμή του γεγονότος."},
-    "source": {"type": "string", "description": "Αυτολεξεί πηγή (από πού προκύπτει) — υποχρεωτικό."},
+    "scope": {"type": "string", "description": "Scope (namespace) of the fact — required."},
+    "subject": {"type": "string", "description": "Subject of the fact (e.g. competitor.x · case.y)."},
+    "predicate": {"type": "string", "description": "Property (e.g. price, status, decision)."},
+    "value": {"type": "string", "description": "The fact's value."},
+    "source": {"type": "string", "description": "Verbatim source (where it comes from) — required."},
     "confidence": {"type": "string", "enum": ["stated", "derived", "assumed"],
-                   "description": "Πόσο βέβαιη είναι η πηγή. Default: stated."},
-    "valid_from": {"type": "string", "description": "Ημερομηνία ισχύος ISO (YYYY-MM-DD). Default: σήμερα."},
+                   "description": "How certain the source is. Default: stated."},
+    "valid_from": {"type": "string", "description": "ISO validity date (YYYY-MM-DD). Default: today."},
 }
 
 SHOW_PROPS = {
-    "scope": {"type": "string", "description": "Περιορισμός σε scope."},
-    "subject": {"type": "string", "description": "Περιορισμός σε subject."},
-    "as_of": {"type": "string", "description": "Ημερομηνία ISO για ιστορική άποψη. Default: σήμερα."},
+    "scope": {"type": "string", "description": "Restrict to a scope."},
+    "subject": {"type": "string", "description": "Restrict to a subject."},
+    "as_of": {"type": "string", "description": "ISO date for a historical view. Default: today."},
 }
 
 SEARCH_PROPS = {
-    "term": {"type": "string", "description": "Όρος αναζήτησης (normalized: πεζά, NFKC)."},
-    "scope": {"type": "string", "description": "Προαιρετικός περιορισμός σε scope."},
+    "term": {"type": "string", "description": "Search term (normalized: lowercase, NFKC)."},
+    "scope": {"type": "string", "description": "Optional restriction to a scope."},
 }
 
 HISTORY_PROPS = {
-    "subject": {"type": "string", "description": "Το θέμα του οποίου θέλουμε το ιστορικό (τί άλλαξε πότε)."},
-    "scope": {"type": "string", "description": "Προαιρετικός περιορισμός σε scope."},
-    "predicate": {"type": "string", "description": "Προαιρετικός περιορισμός σε predicate."},
+    "subject": {"type": "string", "description": "The subject whose history to show (what changed when)."},
+    "scope": {"type": "string", "description": "Optional restriction to a scope."},
+    "predicate": {"type": "string", "description": "Optional restriction to a predicate."},
 }
 
 COMPILE_PROPS = {
-    "scopes": {"type": "string", "description": "Κόμμα-χωρισμένη λίστα scopes."},
-    "budget": {"type": "integer", "description": "Όριο χαρακτήρων εξόδου. Default: 800."},
+    "scopes": {"type": "string", "description": "Comma-separated list of scopes."},
+    "budget": {"type": "integer", "description": "Output character limit. Default: 800."},
 }
 
 STALE_PROPS = {
-    "days": {"type": "integer", "description": "Ενεργά facts με valid_from παλαιότερη από N ημέρες. Default: 30."},
-    "scopes": {"type": "string", "description": "Κόμμα-χωρισμένη λίστα scopes."},
+    "days": {"type": "integer", "description": "Active facts with valid_from older than N days. Default: 30."},
+    "scopes": {"type": "string", "description": "Comma-separated list of scopes."},
 }
 
 EXPORT_PROPS = {
-    "scopes": {"type": "string", "description": "Κόμμα-χωρισμένη λίστα scopes."},
+    "scopes": {"type": "string", "description": "Comma-separated list of scopes."},
     "include_history": {"type": "boolean",
-                        "description": "Αν true φέρνει και τις κλειστές (ιστορικές) γραμμές. Default: false (ενεργές μόνο)."},
+                        "description": "If true, include closed (historical) rows. Default: false (active only)."},
 }
 
 STATS_PROPS: dict = {}
 
 
-ADD = {"name": "factledger_add", "description": "Προσθήκη ή αντικατάσταση γεγονότος στο ledger. Νέα τιμή κλείνει την παλιά (valid_to + superseded_by) αντί να τη σβήνει.",
+ADD = {"name": "factledger_add", "description": "Record or replace a fact in the ledger. A new value closes the previous one (valid_to + superseded_by) instead of deleting it.",
        "parameters": _params(ADD_PROPS, ["scope", "subject", "predicate", "value", "source"])}
 
-SHOW = {"name": "factledger_show", "description": "Η ενεργή αλήθεια που ισχύει τώρα (ή as_of) για το scope/subject.",
+SHOW = {"name": "factledger_show", "description": "The active truth that holds now (or as_of) for a scope/subject.",
         "parameters": _params(SHOW_PROPS)}
 
-SEARCH = {"name": "factledger_search", "description": "Αναζήτηση σε subject/value/predicate/source.",
+SEARCH = {"name": "factledger_search", "description": "Search across subject/value/predicate/source.",
           "parameters": _params(SEARCH_PROPS, ["term"])}
 
-HISTORY = {"name": "factledger_history", "description": "Τι άλλαξε και πότε για ένα subject — audit trail με όλες τις προηγούμενες τιμές.",
+HISTORY = {"name": "factledger_history", "description": "What changed and when for a subject — audit trail with all previous values.",
            "parameters": _params(HISTORY_PROPS, ["subject"])}
 
-COMPILE = {"name": "factledger_compile", "description": "Συμπαγής όψη εντός budget (χρήσιμη για έγχυση σε prompt).",
+COMPILE = {"name": "factledger_compile", "description": "Compact view within a budget (useful for prompt injection).",
            "parameters": _params(COMPILE_PROPS)}
 
-STALE = {"name": "factledger_stale", "description": "Ενεργά facts παλαιότερα από N ημέρες — τι θέλει επανέλεγχο.",
+STALE = {"name": "factledger_stale", "description": "Active facts older than N days — what needs re-checking.",
          "parameters": _params(STALE_PROPS)}
 
-EXPORT = {"name": "factledger_export", "description": "Δομημένη εξαγωγή σε JSON (για watchdog/reports).",
+EXPORT = {"name": "factledger_export", "description": "Structured JSON export (for watchdogs/reports).",
           "parameters": _params(EXPORT_PROPS)}
 
-STATS = {"name": "factledger_stats", "description": "Σύνολα: ενεργές/κλειστές γραμμές, scopes.",
+STATS = {"name": "factledger_stats", "description": "Totals: active/closed rows, scopes.",
          "parameters": _params(STATS_PROPS)}
 
 
@@ -103,7 +97,7 @@ SCHEMAS = {
     "factledger_stale": STALE,
     "factledger_export": EXPORT,
     "factledger_check": {"name": "factledger_check",
-                         "description": "Έλεγχος ακεραιότητας του ledger. Κενή λίστα = υγιές.",
+                         "description": "Ledger integrity check. Empty list = healthy.",
                          "parameters": _params({})},
     "factledger_stats": STATS,
 }
