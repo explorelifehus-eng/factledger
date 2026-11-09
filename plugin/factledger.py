@@ -245,6 +245,124 @@ class Ledger:
         out.sort(key=lambda x: (-x[1], x[0]["scope"], x[0]["subject"]))
         return out
 
+    def brief(self, topic: str, scopes: list[str] | None = None, max_age: int = 14,
+              recent_days: int = 30, ref: str | None = None,
+              deep: bool = False) -> dict:
+        """Ό,τι ξέρουμε για ένα ΘΕΜΑ: ενεργά facts με ηλικία + πρόσφατες αλλαγές.
+
+        Το `search` ψάχνει λέξη· το `brief` ψάχνει θέμα και επιστρέφει μαζί την
+        τρέχουσα αλήθεια και τι έκλεισε πρόσφατα — δηλαδή ό,τι θα θυμόταν άνθρωπος
+        που συζητούσε το ίδιο ζήτημα. Χωρίς αυτό, ένα ξεχασμένο «pending» κάτω από
+        άσχετο subject διαβάζεται σαν σημερινή αλήθεια.
+        """
+        ref = ref or today()
+        today_dt = dt.date.fromisoformat(ref)
+        t = norm(topic)
+        want = {norm(s) for s in scopes} if scopes else None
+        hit: list[dict] = []
+        for r in self.rows:
+            if want and norm(r["scope"]) not in want:
+                continue
+            hay = " | ".join((norm(r["scope"]), norm(r["subject"]), norm(r["predicate"])))
+            if deep:
+                hay += " | " + norm(r["value"])
+            if t and t in hay:
+                hit.append(r)
+
+        def age_of(row: dict, field: str) -> int | None:
+            try:
+                return (today_dt - dt.date.fromisoformat(row[field])).days
+            except (ValueError, TypeError):
+                return None
+
+        active, changed = [], []
+        for r in hit:
+            if self.covers(r, ref):
+                a = age_of(r, "valid_from")
+                active.append({"row": r, "age": a, "stale": a is not None and a >= max_age})
+            elif r["valid_to"]:
+                d = age_of(r, "valid_to")
+                if d is not None and 0 <= d <= recent_days:
+                    changed.append({"row": r, "days_ago": d})
+        active.sort(key=lambda x: (x["row"]["valid_from"] or "", x["row"]["id"]), reverse=True)
+        changed.sort(key=lambda x: (x["row"]["valid_to"], x["row"]["id"]), reverse=True)
+        return {
+            "topic": topic, "ref": ref, "active": active, "changed": changed,
+            "counts": {"active": len(active),
+                       "stale": sum(1 for a in active if a["stale"]),
+                       "changed": len(changed)},
+        }
+
+    def topics(self, scopes: list[str] | None = None, ref: str | None = None,
+               stale_days: int = 30) -> list[dict]:
+        """Ευρετήριο θεμάτων: το prefix του subject (=θέμα) με πλήθος και φρεσκάδα.
+
+        Υπάρχει για να μη μαντεύει κανείς λέξεις-κλειδιά. Το θέμα είναι το πρώτο
+        τμήμα του subject (`hackathon.hermes_plugin` → `hackathon`), γι' αυτό τα
+        facts ενός ζητήματος γράφονται κάτω από το ίδιο prefix.
+        """
+        ref = ref or today()
+        today_dt = dt.date.fromisoformat(ref)
+        want = {norm(s) for s in scopes} if scopes else None
+        groups: dict[str, dict] = {}
+        for r in self.rows:
+            if not self.covers(r, ref):
+                continue
+            if want and norm(r["scope"]) not in want:
+                continue
+            s = norm(r["subject"])
+            key = s.split(".")[0] if "." in s else s
+            g = groups.setdefault(key, {"topic": key, "facts": 0, "scopes": set(),
+                                        "subjects": set(), "newest": "", "stale": 0})
+            g["facts"] += 1
+            g["scopes"].add(r["scope"])
+            g["subjects"].add(r["subject"])
+            if (r["valid_from"] or "") > g["newest"]:
+                g["newest"] = r["valid_from"]
+            try:
+                if (today_dt - dt.date.fromisoformat(r["valid_from"])).days >= stale_days:
+                    g["stale"] += 1
+            except (ValueError, TypeError):
+                pass
+        out = []
+        for g in groups.values():
+            out.append({**g, "scopes": sorted(g["scopes"]),
+                        "subjects": sorted(g["subjects"])})
+        out.sort(key=lambda g: (-g["facts"], g["topic"]))
+        return out
+
+    def audit(self, stale_days: int = 30, ref: str | None = None) -> dict:
+        """Δομικός έλεγχος μνήμης — δεν κρίνει τιμές, κρίνει αν ανακτάται.
+
+        Δύο αστοχίες που κάνουν τη μνήμη να «ξέρει αλλά να μη θυμάται»:
+        1. facts κατάστασης (phase/status/pending…) που μένουν ενεργά χωρίς
+           επανέλεγχο → διαβάζονται σαν σημερινή αλήθεια.
+        2. facts θαμμένα κάτω από μοναδικό subject (note.<hash>) → δεν βρίσκονται
+           με θέμα, μόνο με τύχη στη λέξη.
+        """
+        ref = ref or today()
+        today_dt = dt.date.fromisoformat(ref)
+        state_words = ("phase", "status", "pending", "state", "progress", "next", "step")
+        state_facts, fragmented = [], []
+        for r in self.rows:
+            if not self.covers(r, ref):
+                continue
+            try:
+                age = (today_dt - dt.date.fromisoformat(r["valid_from"])).days
+            except (ValueError, TypeError):
+                age = None
+            p = norm(r["predicate"])
+            if any(w in p for w in state_words) and age is not None and age >= stale_days:
+                state_facts.append({"row": r, "age": age})
+            s = norm(r["subject"])
+            if s.startswith("note.") or (age is not None and age >= stale_days
+                                         and "." not in s):
+                fragmented.append({"row": r, "age": age})
+        state_facts.sort(key=lambda x: -x["age"])
+        fragmented.sort(key=lambda x: -x["age"])
+        return {"ref": ref, "state_facts": state_facts, "fragmented": fragmented,
+                "counts": {"state_facts": len(state_facts), "fragmented": len(fragmented)}}
+
     def export(self, scopes: list[str] | None = None,
                include_history: bool = False) -> list[dict]:
         """Δομημένη εξαγωγή για άλλα εργαλεία (watchdog, reports)."""
@@ -352,12 +470,28 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--days", type=int, default=30)
     st.add_argument("--scopes", default="")
 
+    br = sub.add_parser("brief", help="ό,τι ξέρουμε για ένα ΘΕΜΑ — ενεργά + πρόσφατες αλλαγές")
+    br.add_argument("topic")
+    br.add_argument("--scopes", default="")
+    br.add_argument("--max-age", type=int, default=14)
+    br.add_argument("--recent", type=int, default=30)
+    br.add_argument("--deep", action="store_true")
+    br.add_argument("--json", action="store_true", dest="as_json")
+
+    tp = sub.add_parser("topics", help="ευρετήριο θεμάτων: ποια ζητήματα έχουν facts")
+    tp.add_argument("--scopes", default="")
+    tp.add_argument("--stale-days", type=int, default=30)
+    tp.add_argument("--json", action="store_true", dest="as_json")
+
     ex = sub.add_parser("export", help="δομημένη εξαγωγή σε JSON")
     ex.add_argument("--scopes", default="")
     ex.add_argument("--all", action="store_true", dest="include_history")
     ex.add_argument("--out", default="")
 
     sub.add_parser("check", help="έλεγχος ακεραιότητας")
+    au = sub.add_parser("audit", help="δομικός έλεγχος: facts που δεν ανακτώνται ή δεν ενημερώθηκαν")
+    au.add_argument("--days", type=int, default=30)
+    au.add_argument("--json", action="store_true", dest="as_json")
     sub.add_parser("stats", help="σύνολα")
     return p
 
@@ -411,6 +545,44 @@ def main(argv=None) -> int:
         for r, age in rows:
             print(f"{r['id']}  {r['scope']}/{r['subject']} · {r['predicate']} = "
                   f"{r['value']}  [{r['confidence']}] από {r['valid_from']} ({age} ημ.)")
+    elif args.cmd == "brief":
+        scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
+        b = led.brief(args.topic, scopes or None, args.max_age, args.recent,
+                      deep=args.deep)
+        if args.as_json:
+            print(json.dumps(b, ensure_ascii=False, indent=1, default=str))
+        else:
+            c = b["counts"]
+            if not c["active"] and not c["changed"]:
+                print(f"κανένα fact για «{args.topic}» — δοκίμασε `factledger topics`")
+            else:
+                print(f"brief «{b['topic']}» · {b['ref']} — {c['active']} ενεργά"
+                      f" ({c['stale']} παλιά) · {c['changed']} αλλαγές σε {args.recent} ημ.")
+                for a in b["active"]:
+                    r, age = a["row"], a["age"]
+                    mark = "⚠" if a["stale"] else "■"
+                    tail = f"  [{age}ημ]" if age is not None else ""
+                    if a["stale"]:
+                        tail += " — παλιό, επαλήθευσε"
+                    print(f"{mark} {r['scope']}/{r['subject']} · {r['predicate']} = {r['value']}{tail}")
+                if b["changed"]:
+                    print(f"— άλλαξε πρόσφατα ({args.recent} ημ.):")
+                    for ch in b["changed"]:
+                        r = ch["row"]
+                        print(f"  ✗ {r['subject']} · {r['predicate']} = {r['value']}"
+                              f"  (έκλεισε {r['valid_to']}, {ch['days_ago']}ημ → {r['superseded_by'] or '—'})")
+    elif args.cmd == "topics":
+        scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
+        rows = led.topics(scopes or None, stale_days=args.stale_days)
+        if args.as_json:
+            print(json.dumps(rows, ensure_ascii=False, indent=1))
+        elif not rows:
+            print("κανένα ενεργό fact")
+        else:
+            for g in rows:
+                warn = f"  ⚠{g['stale']} παλιά" if g["stale"] else ""
+                print(f"{g['topic']:24} {g['facts']:4} facts  {len(g['subjects']):3} subjects"
+                      f"  τελευταίο {g['newest'] or '—'}{warn}   [{', '.join(g['scopes'])}]")
     elif args.cmd == "export":
         scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
         data = led.export(scopes or None, args.include_history)
@@ -421,6 +593,26 @@ def main(argv=None) -> int:
             print(f"γράφτηκε: {args.out} ({len(data)} facts)")
         else:
             print(text)
+    elif args.cmd == "audit":
+        a = led.audit(args.days)
+        if args.as_json:
+            print(json.dumps(a, ensure_ascii=False, indent=1, default=str))
+        else:
+            c = a["counts"]
+            print(f"audit · {a['ref']} — {c['state_facts']} facts κατάστασης χωρίς επανέλεγχο"
+                  f" · {c['fragmented']} θαμμένα κάτω από μοναδικό subject")
+            if a["state_facts"]:
+                print("\nΚΑΤΑΣΤΑΣΗ (ενεργά, αλλά μπορεί να μην ισχύουν):")
+                for x in a["state_facts"]:
+                    r = x["row"]
+                    print(f"  ⚠ {r['scope']}/{r['subject']} · {r['predicate']} = {r['value'][:110]}  ({x['age']}ημ)")
+            if a["fragmented"]:
+                print("\nΔΕΝ ΑΝΑΚΤΑΤΑΙ ΜΕ ΘΕΜΑ (γράψ' το κάτω από το θέμα του):")
+                for x in a["fragmented"][:15]:
+                    r = x["row"]
+                    print(f"  · {r['scope']}/{r['subject']} · {r['predicate']} = {r['value'][:90]}  ({x['age']}ημ)")
+                if len(a["fragmented"]) > 15:
+                    print(f"  … (+{len(a['fragmented']) - 15} ακόμη)")
     elif args.cmd == "check":
         probs = led.check()
         if probs:
