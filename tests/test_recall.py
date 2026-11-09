@@ -114,3 +114,21 @@ def test_confirm_rejects_unknown_or_inactive(tmp_path):
         except F.LedgerError:
             continue
         raise AssertionError(f"θα έπρεπε να απορρίψει το {bad}")
+
+
+def test_close_retires_a_log_fact_without_successor(tmp_path):
+    led = make(tmp_path, [
+        row("f1", "pack.gates", "status", "G1 exit 0", "2026-09-20"),
+        row("f2", "hackathon.x", "demo", "84s", "2026-11-05"),
+    ])
+    led.close("f1", "log-τύπου, όχι κατάσταση", ref="2026-11-09")
+    assert [r["id"] for r in led.active(as_of="2026-11-09")] == ["f2"]
+    assert led.check() == []                       # το κλείσιμο με λόγο είναι νόμιμο
+    b = led.audit(stale_days=14, ref="2026-11-09")
+    assert b["state_facts"] == []                  # δεν ξανασημαίνεται
+    try:
+        led.close("f1", "ξανά", ref="2026-11-09")
+    except F.LedgerError:
+        pass
+    else:
+        raise AssertionError("διπλό κλείσιμο θα έπρεπε να απορριφθεί")

@@ -331,6 +331,27 @@ class Ledger:
         out.sort(key=lambda g: (-g["facts"], g["topic"]))
         return out
 
+    def close(self, fact_id: str, reason: str, ref: str | None = None) -> dict:
+        """Κλείσιμο fact χωρίς αντικαταστάτη: έπαψε να ισχύει / δεν ήταν ποτέ κατάσταση.
+
+        Το `add` κλείνει μόνο όταν υπάρχει νέα τιμή. Ένα log-τύπου fact («ολοκληρώθηκε»,
+        «G1 exit 0») δεν έχει διάδοχο — και έτσι έμενε για πάντα ενεργό και σημασμένο
+        από το `audit`. Ο λόγος γράφεται στο source, ώστε το κλείσιμο να είναι ελέγξιμο.
+        """
+        ref = ref or today()
+        target = next((r for r in self.rows if r["id"] == fact_id), None)
+        if target is None:
+            raise LedgerError(f"δεν υπάρχει fact {fact_id}")
+        if not self.covers(target, ref):
+            raise LedgerError(f"{fact_id} δεν είναι ενεργό στις {ref}")
+        if not reason.strip():
+            raise LedgerError("χρειάζεται λόγος κλεισίματος")
+        target["valid_to"] = ref
+        target["superseded_by"] = ""
+        target["source"] = f"{target['source']} · closed: {reason.strip()}"
+        self.save()
+        return target
+
     def confirm(self, fact_id: str, source: str, note: str = "",
                 ref: str | None = None) -> dict:
         """Επαναβεβαίωση: η τιμή ισχύει ΑΚΟΜΑ — ίδια αλήθεια, νέα ημερομηνία.
@@ -437,7 +458,7 @@ class Ledger:
                         problems.append(f"{r['id']}: superseded_by δείχνει σε ανύπαρκτο {s}")
                     elif seen[s]["valid_from"] and r["valid_to"] and seen[s]["valid_from"] < r["valid_to"]:
                         problems.append(f"{r['id']}: η αντικαταστάτρια {s} ξεκινά πριν κλείσει η παλιά")
-                elif r["valid_to"]:
+                elif r["valid_to"] and "· closed:" not in r["source"]:
                     problems.append(f"{r['id']}: κλειστή γραμμή χωρίς superseded_by")
         return problems
 
@@ -511,6 +532,10 @@ def build_parser() -> argparse.ArgumentParser:
     au = sub.add_parser("audit", help="δομικός έλεγχος: facts που δεν ανακτώνται ή δεν ενημερώθηκαν")
     au.add_argument("--days", type=int, default=30)
     au.add_argument("--json", action="store_true", dest="as_json")
+
+    cl = sub.add_parser("close", help="κλείσιμο fact χωρίς αντικαταστάτη (με λόγο)")
+    cl.add_argument("id")
+    cl.add_argument("--reason", required=True)
 
     cf = sub.add_parser("confirm", help="επαναβεβαίωση fact: ισχύει ακόμη, νέα ημερομηνία")
     cf.add_argument("id")
@@ -617,6 +642,13 @@ def main(argv=None) -> int:
             print(f"γράφτηκε: {args.out} ({len(data)} facts)")
         else:
             print(text)
+    elif args.cmd == "close":
+        try:
+            r = led.close(args.id, args.reason)
+        except LedgerError as e:
+            print(f"ΣΦΑΛΜΑ: {e}", file=sys.stderr)
+            return 2
+        print(f"⊘ {r['id']} έκλεισε {r['valid_to']} — {args.reason}")
     elif args.cmd == "confirm":
         try:
             r = led.confirm(args.id, args.source, args.note)
