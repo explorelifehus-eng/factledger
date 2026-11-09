@@ -613,12 +613,12 @@ def main(argv=None) -> int:
                     tail = f"  [{age}ημ]" if age is not None else ""
                     if a["stale"]:
                         tail += " — παλιό, επαλήθευσε"
-                    print(f"{mark} {r['scope']}/{r['subject']} · {r['predicate']} = {r['value']}{tail}")
+                    print(f"{mark} [{r['id']}] {r['scope']}/{r['subject']} · {r['predicate']} = {r['value']}{tail}")
                 if b["changed"]:
                     print(f"— άλλαξε πρόσφατα ({args.recent} ημ.):")
                     for ch in b["changed"]:
                         r = ch["row"]
-                        print(f"  ✗ {r['subject']} · {r['predicate']} = {r['value']}"
+                        print(f"  ✗ [{r['id']}] {r['subject']} · {r['predicate']} = {r['value']}"
                               f"  (έκλεισε {r['valid_to']}, {ch['days_ago']}ημ → {r['superseded_by'] or '—'})")
     elif args.cmd == "topics":
         scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
