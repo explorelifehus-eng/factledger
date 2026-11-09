@@ -331,6 +331,25 @@ class Ledger:
         out.sort(key=lambda g: (-g["facts"], g["topic"]))
         return out
 
+    def confirm(self, fact_id: str, source: str, note: str = "",
+                ref: str | None = None) -> dict:
+        """Επαναβεβαίωση: η τιμή ισχύει ΑΚΟΜΑ — ίδια αλήθεια, νέα ημερομηνία.
+
+        Χωρίς αυτό, ένα σωστό fact γερνάει στο `audit` για πάντα και ο θόρυβος
+        κρύβει τα πραγματικά ληγμένα. Η επαναβεβαίωση κλείνει την παλιά γραμμή και
+        γράφει ίδια τιμή με σημερινό `valid_from` — το ιστορικό δείχνει «ελέγχθηκε».
+        """
+        ref = ref or today()
+        target = next((r for r in self.rows if r["id"] == fact_id), None)
+        if target is None:
+            raise LedgerError(f"δεν υπάρχει fact {fact_id}")
+        if not self.covers(target, ref):
+            raise LedgerError(f"{fact_id} δεν είναι ενεργό στις {ref}")
+        src = source + (f" · {note}" if note else "")
+        res = self.add(target["scope"], target["subject"], target["predicate"],
+                       target["value"], src, target["confidence"], ref, allow_same=True)
+        return {"confirmed": fact_id, **res}
+
     def audit(self, stale_days: int = 30, ref: str | None = None) -> dict:
         """Δομικός έλεγχος μνήμης — δεν κρίνει τιμές, κρίνει αν ανακτάται.
 
@@ -492,6 +511,11 @@ def build_parser() -> argparse.ArgumentParser:
     au = sub.add_parser("audit", help="δομικός έλεγχος: facts που δεν ανακτώνται ή δεν ενημερώθηκαν")
     au.add_argument("--days", type=int, default=30)
     au.add_argument("--json", action="store_true", dest="as_json")
+
+    cf = sub.add_parser("confirm", help="επαναβεβαίωση fact: ισχύει ακόμη, νέα ημερομηνία")
+    cf.add_argument("id")
+    cf.add_argument("--source", required=True)
+    cf.add_argument("--note", default="")
     sub.add_parser("stats", help="σύνολα")
     return p
 
@@ -593,6 +617,13 @@ def main(argv=None) -> int:
             print(f"γράφτηκε: {args.out} ({len(data)} facts)")
         else:
             print(text)
+    elif args.cmd == "confirm":
+        try:
+            r = led.confirm(args.id, args.source, args.note)
+        except LedgerError as e:
+            print(f"ΣΦΑΛΜΑ: {e}", file=sys.stderr)
+            return 2
+        print(f"✓ {args.id} → {r['id']} (επαναβεβαιώθηκε {today()})")
     elif args.cmd == "audit":
         a = led.audit(args.days)
         if args.as_json:

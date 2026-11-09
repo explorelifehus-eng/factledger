@@ -91,3 +91,26 @@ def test_brief_empty_topic_is_silent_not_error(tmp_path):
     led = make(tmp_path, [row("f1", "a.b", "p", "v", "2026-11-05")])
     b = led.brief("δεν-υπάρχει", ref="2026-11-09")
     assert b["counts"] == {"active": 0, "stale": 0, "changed": 0}
+
+
+def test_confirm_refreshes_date_without_losing_history(tmp_path):
+    led = make(tmp_path, [row("f1", "hackathon.x", "submitted", "form OK", "2026-10-01")])
+    r = led.confirm("f1", "re-checked", ref="2026-11-09")
+    assert r["id"] != "f1"                      # νέα γραμμή, ίδια αλήθεια
+    b = led.brief("hackathon", ref="2026-11-09", max_age=14)
+    assert b["active"][0]["age"] == 0           # δεν γερνάει πια
+    assert b["changed"][0]["row"]["id"] == "f1"  # η παλιά μένει ορατή ως αλλαγή
+    assert led.check() == []                    # καμία δομική ζημιά
+
+
+def test_confirm_rejects_unknown_or_inactive(tmp_path):
+    led = make(tmp_path, [
+        row("f1", "a.b", "p", "v", "2026-09-01", "2026-10-01", "f2"),
+        row("f2", "a.b", "p", "v2", "2026-10-01"),
+    ])
+    for bad in ("f9", "f1"):
+        try:
+            led.confirm(bad, "x", ref="2026-11-09")
+        except F.LedgerError:
+            continue
+        raise AssertionError(f"θα έπρεπε να απορρίψει το {bad}")
