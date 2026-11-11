@@ -15,12 +15,31 @@ import csv
 import datetime as dt
 import json
 import os
+import re
 import sys
 import time
 import unicodedata
 
 FIELDS = ("id", "scope", "subject", "predicate", "value",
           "valid_from", "valid_to", "superseded_by", "source", "confidence")
+# Subject που δεν ανακτάται με ΘΕΜΑ: ό,τι είναι ταυτότητα αντί για θέμα —
+# `note.<hash>`, `session.<id>`, γυμνό hex/uuid. Ένα επίπεδο αλλά ΠΕΡΙΓΡΑΦΙΚΟ
+# subject (`shipping`, `email`) βρίσκεται κανονικά με `brief <subject>`, άρα δεν
+# είναι θαμμένο — μόνο ενημερωτικά «επίπεδο».
+OPAQUE_SUBJECT_RE = re.compile(
+    r"^note\.[0-9a-f]{6,}$"                     # note.7b9137e5
+    r"|^session\.\d{6,}"                        # session.20261017_200602_7b8a4e
+    r"|^[0-9a-f]{6,}$"                          # γυμνό hash (cron/b3dc21979c5e)
+    r"|^[0-9a-f]{8}-[0-9a-f]{4}-",              # uuid
+    re.I,
+)
+
+
+def opaque_subject(s: str) -> bool:
+    """True όταν το subject είναι ταυτότητα, όχι θέμα (δεν ανακτάται με brief)."""
+    return bool(OPAQUE_SUBJECT_RE.search(norm(s)))
+
+
 CONFIDENCE = ("stated", "derived", "assumed")
 CONF_RANK = {"stated": 0, "derived": 1, "assumed": 2}
 
@@ -377,13 +396,18 @@ class Ledger:
         Δύο αστοχίες που κάνουν τη μνήμη να «ξέρει αλλά να μη θυμάται»:
         1. facts κατάστασης (phase/status/pending…) που μένουν ενεργά χωρίς
            επανέλεγχο → διαβάζονται σαν σημερινή αλήθεια.
-        2. facts θαμμένα κάτω από μοναδικό subject (note.<hash>) → δεν βρίσκονται
-           με θέμα, μόνο με τύχη στη λέξη.
+        2. facts θαμμένα κάτω από subject-ταυτότητα (note.<hash>, session.<id>,
+           γυμνό hex/uuid) → δεν βρίσκονται με θέμα, μόνο με τύχη στη λέξη.
+
+        Ένα επίπεδο αλλά περιγραφικό subject (`shipping`, `email`) ΔΕΝ είναι
+        θαμμένο: `brief <subject>` το βρίσκει. Επιστρέφεται χωριστά ως
+        `flat_subjects` (ενημερωτικό), ώστε ο αριθμός «θαμμένα» να σημαίνει
+        μόνο ό,τι δεν ανακτάται.
         """
         ref = ref or today()
         today_dt = dt.date.fromisoformat(ref)
         state_words = ("phase", "status", "pending", "state", "progress", "next", "step")
-        state_facts, fragmented = [], []
+        state_facts, fragmented, flat = [], [], []
         for r in self.rows:
             if not self.covers(r, ref):
                 continue
@@ -395,13 +419,17 @@ class Ledger:
             if any(w in p for w in state_words) and age is not None and age >= stale_days:
                 state_facts.append({"row": r, "age": age})
             s = norm(r["subject"])
-            if s.startswith("note.") or (age is not None and age >= stale_days
-                                         and "." not in s):
+            if opaque_subject(s):
                 fragmented.append({"row": r, "age": age})
+            elif age is not None and age >= stale_days and "." not in s:
+                flat.append({"row": r, "age": age})
         state_facts.sort(key=lambda x: -x["age"])
         fragmented.sort(key=lambda x: -x["age"])
+        flat.sort(key=lambda x: -x["age"])
         return {"ref": ref, "state_facts": state_facts, "fragmented": fragmented,
-                "counts": {"state_facts": len(state_facts), "fragmented": len(fragmented)}}
+                "flat_subjects": flat,
+                "counts": {"state_facts": len(state_facts), "fragmented": len(fragmented),
+                           "flat_subjects": len(flat)}}
 
     def export(self, scopes: list[str] | None = None,
                include_history: bool = False) -> list[dict]:
@@ -663,7 +691,8 @@ def main(argv=None) -> int:
         else:
             c = a["counts"]
             print(f"audit · {a['ref']} — {c['state_facts']} facts κατάστασης χωρίς επανέλεγχο"
-                  f" · {c['fragmented']} θαμμένα κάτω από μοναδικό subject")
+                  f" · {c['fragmented']} θαμμένα κάτω από subject-ταυτότητα"
+                  f" · {c['flat_subjects']} επίπεδα subjects (ανακτώνται με brief <subject>)")
             if a["state_facts"]:
                 print("\nΚΑΤΑΣΤΑΣΗ (ενεργά, αλλά μπορεί να μην ισχύουν):")
                 for x in a["state_facts"]:
