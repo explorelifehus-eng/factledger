@@ -84,7 +84,9 @@ def test_audit_finds_unreviewed_state_and_buried_facts(tmp_path):
     a = led.audit(stale_days=30, ref="2026-11-09")
     assert [x["row"]["id"] for x in a["state_facts"]] == ["f1"]
     assert {x["row"]["id"] for x in a["fragmented"]} == {"f2"}
-    assert a["counts"] == {"state_facts": 1, "fragmented": 1}
+    assert a["counts"]["state_facts"] == 1
+    assert a["counts"]["fragmented"] == 1
+    assert a["counts"]["flat_subjects"] == 0
 
 
 def test_brief_empty_topic_is_silent_not_error(tmp_path):
