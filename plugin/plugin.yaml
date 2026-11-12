@@ -1,5 +1,5 @@
 name: factledger
-version: "1.0.0"
+version: "1.1.0"
 manifest_version: 2
 description: >-
   Typed-facts ledger with structural truth — record, search, and audit facts the
@@ -30,3 +30,4 @@ provides_tools:
   - factledger_export
   - factledger_check
   - factledger_stats
+  - factledger_standalone
