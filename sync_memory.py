@@ -108,6 +108,31 @@ def render(led: Ledger, target: dict) -> str:
 
     lines = [header] if header else []
     used = len(header) + SEP_LEN if header else 0
+
+    # Οι ανοιχτές εργασίες μπαίνουν ΠΡΙΝ από τα scopes και από ΟΛΑ τα scopes:
+    # είναι το μόνο περιεχόμενο που πρέπει να ταξιδεύει σε κάθε profile, αλλιώς
+    # ένα θέμα που ξεκίνησε στο default δεν συνεχίζεται από το it-section.
+    tcfg = target.get("tasks")
+    if tcfg:
+        tbudget = min(int(tcfg.get("budget", 600)), max(0, budget - used))
+        tmax = int(tcfg.get("max", 8))
+        items = led.tasks()
+        if items and tbudget > 80:
+            block, spent = ["— ανοιχτές εργασίες (όλα τα profiles) —"], 0
+            spent += len(block[0]) + SEP_LEN
+            for t in items[:tmax]:
+                tk, r0 = t["task"], t["row"]
+                verb = r0["predicate"].split(".", 1)[-1]
+                tail = tk["state"] + (f", due {tk['due']}" if tk["due"] else "")
+                line = f"- ▸ {r0['subject']} · {verb} = {tk['text'][:58]} [{tail}]"
+                if spent + len(line) + SEP_LEN > tbudget:
+                    break
+                block.append(line)
+                spent += len(line) + SEP_LEN
+            if len(block) > 1:
+                lines.extend(block)
+                used += spent
+
     carry = 0
     for idx, sc in enumerate(scopes or []):
         # Κρατάμε χώρο για την τελική σημείωση «λείπουν scopes», αλλιώς το αρχείο

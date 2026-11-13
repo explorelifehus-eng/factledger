@@ -267,3 +267,17 @@ def test_handover_hides_status_fact_covered_by_task(tmp_path, capsys):
     assert "request_status" not in out          # κρύφτηκε — το λέει η εργασία
     assert "vin" in out                          # τα υπόλοιπα facts μένουν
     assert "κρυμμένα" in out
+
+
+def test_sync_render_puts_tasks_first_from_any_scope(tmp_path):
+    """Το tasks block μπαίνει πριν τα scopes και φέρνει εργασίες από ΟΛΑ τα scopes
+    (αλλιώς θέμα που ξεκίνησε στο default δεν φαίνεται από άλλο profile)."""
+    import sync_memory as S
+    led = make(tmp_path)
+    led.task_set("user", "car.beetle", "dealer_reply", "απάντηση dealer",
+                 owner="third-party", state="blocked", evidence="23210")
+    led.add("crypto", "cex.strategy", "note", "κάτι άσχετο", "test")
+    out = S.render(led, {"scopes": ["crypto"], "budget": 900,
+                         "tasks": {"budget": 300, "max": 5}})
+    assert "ανοιχτές εργασίες" in out
+    assert out.index("car.beetle · dealer_reply") < out.index("cex.strategy")
