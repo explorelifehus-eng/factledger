@@ -234,3 +234,21 @@ def test_parse_task_keeps_dots_inside_evidence():
     assert t["text"] == "απάντηση dealer"
     assert t["evidence"] == "τηλ. 23210 90755 · salesvw@poreia-ae.gr"
     assert t["state"] == "blocked"
+
+
+def test_deep_check_does_not_call_reassertion_a_duplicate(tmp_path):
+    """Ίδια τιμή/ημερομηνία αλλά άλλο κλείσιμο = ιστορικό (όχι διπλή εγγραφή)."""
+    led = make(tmp_path, [
+        row("f1", "a.b", "p", "same", "2026-09-20", "2026-09-20", "f2"),
+        row("f2", "a.b", "p", "other", "2026-09-20", "2026-09-20", "f3"),
+        row("f3", "a.b", "p", "same", "2026-09-20"),
+    ])
+    assert led.check(deep=True) == []
+
+
+def test_deep_check_finds_byte_identical_rows(tmp_path):
+    led = make(tmp_path, [
+        row("f1", "a.b", "p", "v", "2026-11-01"),
+        row("f2", "a.b", "p", "v", "2026-11-01"),
+    ])
+    assert any("πανομοιότυπη" in p for p in led.check(deep=True))

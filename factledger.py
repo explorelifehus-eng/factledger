@@ -684,13 +684,19 @@ class Ledger:
                 nxt = seen.get(r["superseded_by"]) if r["superseded_by"] else None
                 if nxt and r["valid_to"] and nxt["valid_from"] and nxt["valid_from"] != r["valid_to"]:
                     problems.append(f"{r['id']}: κλείνει {r['valid_to']} αλλά η διάδοχος {nxt['id']} ξεκινά {nxt['valid_from']}")
-            dupes: dict[tuple, list[str]] = {}
+            # Πανομοιότυπη = ίδια σε ΟΛΑ τα πεδία εκτός id. Ίδια τιμή με ίδιο
+            # valid_from αλλά άλλο valid_to/superseded_by ΔΕΝ είναι διπλό: είναι
+            # «έκλεισε και ξαναγράφτηκε η ίδια αλήθεια» — ιστορικό, όχι σφάλμα.
+            sig: dict[tuple, list[str]] = {}
             for r in self.rows:
-                k = self.key_of(r) + (norm(r["value"]), r["valid_from"])
-                dupes.setdefault(k, []).append(r["id"])
-            for k, ids in dupes.items():
+                k = tuple(norm(r[f]) for f in ("scope", "subject", "predicate", "value",
+                                               "valid_from", "valid_to", "superseded_by",
+                                               "source", "confidence"))
+                sig.setdefault(k, []).append(r["id"])
+            for k, ids in sig.items():
                 if len(ids) > 1:
-                    problems.append(f"διπλή εγγραφή: {k[1]} · {k[2]} = {k[3][:40]} → {ids}")
+                    problems.append(f"πανομοιότυπη εγγραφή (όλα τα πεδία ίδια): "
+                                    f"{k[1]} · {k[2]} = {k[3][:40]} → {ids}")
             seq = [(r["id"], int(r["id"][1:])) for r in self.rows
                    if r["id"].startswith("f") and r["id"][1:].isdigit()]
             for (ia, a), (ib, b) in zip(seq, seq[1:]):
