@@ -252,3 +252,18 @@ def test_deep_check_finds_byte_identical_rows(tmp_path):
         row("f2", "a.b", "p", "v", "2026-11-01"),
     ])
     assert any("πανομοιότυπη" in p for p in led.check(deep=True))
+
+
+def test_handover_hides_status_fact_covered_by_task(tmp_path, capsys):
+    """Το request_status δεν επαναλαμβάνεται όταν υπάρχει εργασία στο ίδιο subject."""
+    led = make(tmp_path)
+    led.add("user", "car.beetle", "request_status", "στάλθηκε 11/11, αναμονή", "test")
+    led.add("user", "car.beetle", "vin", "WVWZZZ9CZ3M600610", "test")
+    led.task_set("user", "car.beetle", "dealer_reply", "απάντηση dealer",
+                 owner="third-party", state="blocked", evidence="23210 90755")
+    db = str(tmp_path / "facts.tsv")
+    assert F.main(["--db", db, "brief", "car.beetle", "--handover"]) == 0
+    out = capsys.readouterr().out
+    assert "request_status" not in out          # κρύφτηκε — το λέει η εργασία
+    assert "vin" in out                          # τα υπόλοιπα facts μένουν
+    assert "κρυμμένα" in out

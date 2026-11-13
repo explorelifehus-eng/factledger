@@ -837,13 +837,28 @@ def print_handover(led: "Ledger", b: dict, limit: int = 6) -> None:
             if tk["evidence"]:
                 line += f"  ↳ {tk['evidence'][:40]}"
             print(line)
-    facts = [a for a in b["active"] if not is_task(a["row"]["predicate"])][:limit]
+    # Η εργασία κρατά την τρέχουσα κατάσταση με απόδειξη· ένα fact `request_status`
+    # στο ίδιο subject λέει το ίδιο πράγμα με άλλα λόγια. Δεν το δείχνουμε δύο φορές.
+    STATEISH = ("status", "phase", "state", "pending", "progress", "step", "next")
+    task_subjects = {t["row"]["subject"] for t in tasks}
+    facts, hidden = [], 0
+    for a in b["active"]:
+        r = a["row"]
+        if is_task(r["predicate"]):
+            continue
+        if r["subject"] in task_subjects and any(w in norm(r["predicate"]) for w in STATEISH):
+            hidden += 1
+            continue
+        facts.append(a)
+    facts = facts[:limit]
     if facts:
         print(paint("  ▸ κατάσταση", "cyan"))
         for a in facts:
             r = a["row"]
             print(f"    {human_age(a['age']):>6}  {fact_marker(r) or '·'} "
                   f"{r['predicate']} = {str(r['value'])[:88]}")
+    if hidden:
+        print(paint(f"    ({hidden} fact κατάστασης κρυμμένα — τα καλύπτουν οι εργασίες)", "dim"))
     if b["changed"]:
         print(paint("  ▸ άλλαξε πρόσφατα", "cyan"))
         for ch in b["changed"][:limit]:
