@@ -52,6 +52,33 @@ python factledger.py stats
 
 `--source` is **mandatory**: a fact without a source is not written.
 
+## Tasks: an action request is a fact with a lifecycle
+
+A request ("send the mail", "order the part") is not prose — it is a `task.<verb>`
+fact whose value carries `state`, `owner`, `evidence` and `due`. `done` **cannot be
+written without evidence**, so "it was done" always points at something checkable:
+a message-id, a PR, a path.
+
+```bash
+python factledger.py task add --scope user --subject car.beetle2003 --verb send_mail \
+    --text "request part 1C0 959 831" --due 2026-11-18 --source "user message"
+
+python factledger.py tasks                       # open tasks only
+python factledger.py tasks car.beetle2003        # one topic
+python factledger.py tasks --all                 # include done / cancelled
+python factledger.py task done f02579 --evidence "gmail msg 1a1d58f8"
+python factledger.py brief car.beetle2003 --handover   # compact session-start card
+```
+
+`compile` marks the kinds so the budgeted view cannot drop the constraints:
+`⛔` prohibition, `§` rule, `✎` correction, `▸` open task, `✓` closed task —
+rules and prohibitions are emitted first, and task evidence stays out of the prompt.
+
+```bash
+python factledger.py export --format md|csv|json   # human, spreadsheet, machine
+python factledger.py check --deep                  # hand edits, broken chains, duplicate rows
+```
+
 ## The loop: extract → ledger → memory files
 
 Two tools close the cycle (both stdlib):

@@ -60,6 +60,119 @@ class LedgerError(Exception):
     pass
 
 
+# ── εργασίες (task.<ρήμα>): το lifecyle του αιτήματος ως fact ───────────────
+TASK_STATES = ("requested", "approved", "done", "blocked", "cancelled")
+TASK_DONE = ("done", "cancelled")
+TASK_META_RE = re.compile(r"(?:^|\s·\s)(state|owner|evidence|due)=([^·]+)", re.I)
+RULE_PREFIXES = ("rule", "rules", "law", "convention", "policy")
+PROHIBIT_PREFIXES = ("prohibition", "forbid", "forbidden", "never", "ban")
+
+
+def is_task(predicate: str) -> bool:
+    return norm(predicate).startswith("task.")
+
+
+def parse_task(value: str) -> dict:
+    """Διαβάζει τιμή εργασίας: ελεύθερο κείμενο + `· state=/owner=/evidence=/due=`."""
+    meta: dict[str, str] = {}
+    text_parts: list[str] = []
+    cur: str | None = None
+    for part in str(value or "").split("·"):
+        p = part.strip()
+        if not p:
+            continue
+        m = re.match(r"(state|owner|evidence|due)\s*=\s*(.+)$", p, re.I)
+        if m:
+            cur = m.group(1).lower()
+            meta[cur] = m.group(2).strip()
+        elif cur:
+            # Η τιμή ενός πεδίου μπορεί να περιέχει «·» (π.χ. δύο τηλέφωνα) —
+            # ανήκει στο προηγούμενο πεδίο, όχι στο κείμενο της εργασίας.
+            meta[cur] = f"{meta[cur]} · {p}".strip(" ·")
+        else:
+            text_parts.append(p)
+    return {"text": " · ".join(text_parts), "state": meta.get("state", "requested").lower(),
+            "owner": meta.get("owner", "agent"), "evidence": meta.get("evidence", ""),
+            "due": meta.get("due", "")}
+
+
+def render_task(text: str, state: str, owner: str = "agent",
+                evidence: str = "", due: str = "") -> str:
+    parts = [text.strip(), f"state={state}", f"owner={owner}"]
+    if evidence:
+        parts.append(f"evidence={evidence.strip()}")
+    if due:
+        parts.append(f"due={due.strip()}")
+    return " · ".join(p for p in parts if p)
+
+
+def fact_marker(row: dict) -> str:
+    """Σήμανση είδους ώστε κανόνες/απαγορεύσεις να ξεχωρίζουν στο compile."""
+    p = norm(row["predicate"])
+    if p.startswith(PROHIBIT_PREFIXES):
+        return "⛔"
+    if p.startswith("correction"):
+        return "✎"
+    if p.startswith(RULE_PREFIXES):
+        return "§"
+    if is_task(p):
+        return "✓" if parse_task(row["value"])["state"] in TASK_DONE else "▸"
+    return ""
+
+
+# ── παρουσίαση: χρώμα μόνο σε tty, στοίχιση χωρίς εξαρτήσεις ────────────────
+ANSI = {"dim": "\x1b[2m", "red": "\x1b[31m", "green": "\x1b[32m",
+        "yellow": "\x1b[33m", "cyan": "\x1b[36m", "bold": "\x1b[1m",
+        "reset": "\x1b[0m"}
+
+
+def use_color() -> bool:
+    """Ποτέ σε pipe/αρχείο· σεβασμός NO_COLOR· FACTLEDGER_COLOR=1 το επιβάλλει."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FACTLEDGER_COLOR") == "1":
+        return True
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def paint(text: str, style: str) -> str:
+    if not use_color() or style not in ANSI:
+        return text
+    return f"{ANSI[style]}{text}{ANSI['reset']}"
+
+
+def dwidth(s: str) -> int:
+    """Οπτικό πλάτος: οι τόνοι/συνδυαστικοί χαρακτήρες δεν πιάνουν στήλη."""
+    w = 0
+    for ch in str(s):
+        if unicodedata.combining(ch):
+            continue
+        w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return w
+
+
+def pad(s: str, width: int, align: str = "left") -> str:
+    gap = max(0, width - dwidth(s))
+    return (" " * gap + s) if align == "right" else (s + " " * gap)
+
+
+def human_age(days: int | None) -> str:
+    if days is None:
+        return "—"
+    if days <= 0:
+        return "σήμερα"
+    if days < 7:
+        return f"{days}ημ"
+    if days < 60:
+        return f"{days // 7}εβδ"
+    if days < 730:
+        return f"{days // 30}μ"
+    return f"{days // 365}χ"
+
+
 class Ledger:
     def __init__(self, path: str, aliases_path: str | None = None):
         self.path = path
@@ -221,17 +334,28 @@ class Ledger:
         if scopes:
             want = {norm(s) for s in scopes}
             rows = [r for r in rows if norm(r["scope"]) in want]
+        def mark_group(r: dict) -> int:
+            return {"⛔": 0, "§": 1, "✎": 2}.get(fact_marker(r), 3)
+
         if order == "recency":
             rows.sort(key=lambda r: (r["valid_from"] or "", r["scope"], r["subject"]), reverse=True)
         else:
-            rows.sort(key=lambda r: (CONF_RANK.get(r["confidence"], 9), r["scope"], r["subject"]))
+            # Κανόνες/απαγορεύσεις πρώτα: αν κοπεί το budget, δεν χάνονται αυτά.
+            rows.sort(key=lambda r: (mark_group(r), CONF_RANK.get(r["confidence"], 9),
+                                     r["scope"], r["subject"]))
         lines = [header] if header else []
         used = len(header or "")
         for i, r in enumerate(rows):
             v = r["value"]
+            if is_task(r["predicate"]):
+                tk = parse_task(v)
+                v = tk["text"] + (f" [{tk['state']}]" if tk["state"] != "requested" else "")
+                if tk["due"]:
+                    v += f" (due {tk['due']})"
             if max_value and len(v) > max_value:
                 v = v[: max_value - 1].rstrip() + "…"
-            line = f"- {r['subject']} · {r['predicate']} = {v}"
+            m = fact_marker(r)
+            line = f"- {m + ' ' if m else ''}{r['subject']} · {r['predicate']} = {v}"
             if used + len(line) + 1 > budget:
                 lines.append(f"… (+{len(rows) - i} ακόμη, δες `factledger show`)")
                 break
@@ -447,7 +571,70 @@ class Ledger:
             for r in rows if not want or norm(r["scope"]) in want
         ]
 
-    def check(self) -> list[str]:
+    # ── εργασίες: αίτημα που έχει κύκλο ζωής, όχι απλό fact ─────────────────
+    def tasks(self, topic: str | None = None, include_done: bool = False,
+              ref: str | None = None) -> list[dict]:
+        """Ενεργές εργασίες `task.*` — προεπιλογή μόνο οι ανοιχτές.
+
+        Η ηλικία μετριέται από το `valid_from` της τρέχουσας κατάστασης: μια
+        εργασία που «ζητήθηκε» πριν 5 μέρες και δεν άλλαξε, φαίνεται 5 ημερών.
+        """
+        ref = ref or today()
+        today_dt = dt.date.fromisoformat(ref)
+        out = []
+        for r in self.rows:
+            if not is_task(r["predicate"]) or not self.covers(r, ref):
+                continue
+            t = parse_task(r["value"])
+            if topic:
+                hay = " | ".join((r["scope"], r["subject"], r["predicate"], t["text"]))
+                if norm(topic) not in norm(hay):
+                    continue
+            if not include_done and t["state"] in TASK_DONE:
+                continue
+            try:
+                age = (today_dt - dt.date.fromisoformat(r["valid_from"])).days
+            except (ValueError, TypeError):
+                age = None
+            overdue = bool(t["due"]) and t["due"] < ref and t["state"] not in TASK_DONE
+            out.append({"row": r, "task": t, "age": age, "overdue": overdue})
+        out.sort(key=lambda x: (x["overdue"] is False, x["row"]["subject"], x["row"]["predicate"]))
+        return out
+
+    def task_set(self, scope: str, subject: str, verb: str, text: str,
+                 owner: str = "agent", state: str = "requested", evidence: str = "",
+                 due: str = "", source: str = "") -> dict:
+        """Γράφει/ενημερώνει εργασία. `done` χωρίς απόδειξη απορρίπτεται."""
+        st = norm(state)
+        if st not in TASK_STATES:
+            raise LedgerError(f"state must be one of {TASK_STATES}")
+        pred = verb if norm(verb).startswith("task.") else "task." + norm(verb).replace(" ", "_")
+        ev = str(evidence or "").strip()
+        if st in TASK_DONE and not ev:
+            raise LedgerError("done χωρίς --evidence: ένα «έγινε» χωρίς απόδειξη δεν καταγράφεται")
+        value = render_task(text, st, owner, ev, due)
+        src = source.strip() or f"task {st}"
+        return self.add(scope, subject, pred, value, src)
+
+    def task_done(self, fact_id: str, evidence: str, note: str = "") -> dict:
+        """Κλείνει εργασία με απόδειξη (message-id, PR, path). Χωρίς απόδειξη: σφάλμα."""
+        target = next((r for r in self.rows if r["id"] == fact_id), None)
+        if target is None:
+            raise LedgerError(f"δεν υπάρχει fact {fact_id}")
+        if not self.covers(target, today()):
+            raise LedgerError(f"{fact_id} δεν είναι ενεργό")
+        if not is_task(target["predicate"]):
+            raise LedgerError(f"{fact_id} δεν είναι εργασία (task.*)")
+        ev = str(evidence or "").strip()
+        if not ev:
+            raise LedgerError("χρειάζεται --evidence <message-id|PR|path> — αλλιώς το «έγινε» δεν αποδεικνύεται")
+        t = parse_task(target["value"])
+        value = render_task(t["text"], "done", t["owner"], ev, t["due"])
+        src = f"task done: {ev}" + (f" · {note}" if note.strip() else "")
+        return self.add(target["scope"], target["subject"], target["predicate"],
+                        value, src, target["confidence"], today(), allow_same=True)
+
+    def check(self, deep: bool = False) -> list[str]:
         """Έλεγχος ακεραιότητας. Κενή λίστα = υγιές."""
         problems, seen = [], {}
         by_key: dict[tuple, list[dict]] = {}
@@ -468,6 +655,8 @@ class Ledger:
                         dt.date.fromisoformat(v)
                     except ValueError:
                         problems.append(f"{r['id']}: μη ISO ημερομηνία στο {f}: {v}")
+            if r["valid_to"] and r["valid_from"] and r["valid_to"] < r["valid_from"]:
+                problems.append(f"{r['id']}: valid_to {r['valid_to']} < valid_from {r['valid_from']}")
         ref = today()
         for k, rows in by_key.items():
             todayrows = [r for r in rows if self.covers(r, ref)]
@@ -488,6 +677,26 @@ class Ledger:
                         problems.append(f"{r['id']}: η αντικαταστάτρια {s} ξεκινά πριν κλείσει η παλιά")
                 elif r["valid_to"] and "· closed:" not in r["source"]:
                     problems.append(f"{r['id']}: κλειστή γραμμή χωρίς superseded_by")
+        if deep:
+            # Χειροκίνητες επεμβάσεις στο TSV: δεν πιάνεται από τους κανόνες
+            # συνέπειας, αλλά χαλάει την αρίθμηση/το κλείσιμο της αλυσίδας.
+            for r in self.rows:
+                nxt = seen.get(r["superseded_by"]) if r["superseded_by"] else None
+                if nxt and r["valid_to"] and nxt["valid_from"] and nxt["valid_from"] != r["valid_to"]:
+                    problems.append(f"{r['id']}: κλείνει {r['valid_to']} αλλά η διάδοχος {nxt['id']} ξεκινά {nxt['valid_from']}")
+            dupes: dict[tuple, list[str]] = {}
+            for r in self.rows:
+                k = self.key_of(r) + (norm(r["value"]), r["valid_from"])
+                dupes.setdefault(k, []).append(r["id"])
+            for k, ids in dupes.items():
+                if len(ids) > 1:
+                    problems.append(f"διπλή εγγραφή: {k[1]} · {k[2]} = {k[3][:40]} → {ids}")
+            seq = [(r["id"], int(r["id"][1:])) for r in self.rows
+                   if r["id"].startswith("f") and r["id"][1:].isdigit()]
+            for (ia, a), (ib, b) in zip(seq, seq[1:]):
+                if b < a:
+                    problems.append(f"ids εκτός σειράς: {ia} πριν από {ib} (χειροκίνητη επέμβαση;)")
+                    break
         return problems
 
     def stats(self) -> dict:
@@ -517,11 +726,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--scope")
     s.add_argument("--subject")
     s.add_argument("--as-of")
+    s.add_argument("--source", action="store_true", help="δείξε και την προέλευση")
 
     h = sub.add_parser("history", help="τι άλλαξε πότε")
     h.add_argument("--subject", required=True)
     h.add_argument("--scope")
     h.add_argument("--predicate")
+    h.add_argument("--full", action="store_true", help="πλήρης τιμή + source + superseded_by")
 
     q = sub.add_parser("search", help="αναζήτηση")
     q.add_argument("term")
@@ -544,6 +755,7 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--max-age", type=int, default=14)
     br.add_argument("--recent", type=int, default=30)
     br.add_argument("--deep", action="store_true")
+    br.add_argument("--handover", action="store_true", help="compact κάρτα έναρξης συνεδρίας")
     br.add_argument("--json", action="store_true", dest="as_json")
 
     tp = sub.add_parser("topics", help="ευρετήριο θεμάτων: ποια ζητήματα έχουν facts")
@@ -554,9 +766,11 @@ def build_parser() -> argparse.ArgumentParser:
     ex = sub.add_parser("export", help="δομημένη εξαγωγή σε JSON")
     ex.add_argument("--scopes", default="")
     ex.add_argument("--all", action="store_true", dest="include_history")
+    ex.add_argument("--format", choices=("json", "md", "csv"), default="json")
     ex.add_argument("--out", default="")
 
-    sub.add_parser("check", help="έλεγχος ακεραιότητας")
+    ch = sub.add_parser("check", help="έλεγχος ακεραιότητας")
+    ch.add_argument("--deep", action="store_true", help="και χειροκίνητες επεμβάσεις/αλυσίδες")
     au = sub.add_parser("audit", help="δομικός έλεγχος: facts που δεν ανακτώνται ή δεν ενημερώθηκαν")
     au.add_argument("--days", type=int, default=30)
     au.add_argument("--json", action="store_true", dest="as_json")
@@ -569,8 +783,66 @@ def build_parser() -> argparse.ArgumentParser:
     cf.add_argument("id")
     cf.add_argument("--source", required=True)
     cf.add_argument("--note", default="")
+
+    tk = sub.add_parser("tasks", help="εργασίες: τι ζητήθηκε, σε ποια κατάσταση, με ποια απόδειξη")
+    tk.add_argument("topic", nargs="?", default=None)
+    tk.add_argument("--scopes", default="")
+    tk.add_argument("--all", action="store_true", dest="include_done")
+    tk.add_argument("--json", action="store_true", dest="as_json")
+
+    tt = sub.add_parser("task", help="καταγραφή ή ολοκλήρωση εργασίας")
+    tsub = tt.add_subparsers(dest="task_cmd", required=True)
+    ta = tsub.add_parser("add", help="νέα εργασία (state=requested)")
+    ta.add_argument("--scope", required=True)
+    ta.add_argument("--subject", required=True)
+    ta.add_argument("--verb", required=True, help="π.χ. send_mail → task.send_mail")
+    ta.add_argument("--text", required=True)
+    ta.add_argument("--owner", default="agent")
+    ta.add_argument("--state", default="requested")
+    ta.add_argument("--evidence", default="")
+    ta.add_argument("--due", default="")
+    ta.add_argument("--source", default="")
+    td = tsub.add_parser("done", help="ολοκλήρωση — απαιτεί --evidence")
+    td.add_argument("id")
+    td.add_argument("--evidence", default="")
+    td.add_argument("--note", default="")
+
     sub.add_parser("stats", help="σύνολα")
     return p
+
+
+def print_handover(led: "Ledger", b: dict, limit: int = 6) -> None:
+    """Κάρτα έναρξης συνεδρίας: εργασίες, κατάσταση, πρόσφατες αλλαγές — σε 10 γραμμές."""
+    c = b["counts"]
+    print(paint(f"── {b['topic']} · {b['ref']} ──", "bold"))
+    if not c["active"] and not c["changed"]:
+        print("  κανένα fact — δοκίμασε `factledger topics`")
+        return
+    print(f"  ενεργά {c['active']} · παλιά {c['stale']} · αλλαγές {c['changed']}")
+    tasks = led.tasks(b["topic"], include_done=False)
+    if tasks:
+        print(paint("  ▸ εργασίες", "cyan"))
+        for t in tasks[:limit]:
+            tk, row = t["task"], t["row"]
+            line = (f"    {human_age(t['age']):>6}  {pad(tk['state'], 9)} "
+                    f"{tk['text'][:64]}")
+            if t["overdue"]:
+                line += f"  ⚠ due {tk['due']}"
+            if tk["evidence"]:
+                line += f"  ↳ {tk['evidence'][:40]}"
+            print(line)
+    facts = [a for a in b["active"] if not is_task(a["row"]["predicate"])][:limit]
+    if facts:
+        print(paint("  ▸ κατάσταση", "cyan"))
+        for a in facts:
+            r = a["row"]
+            print(f"    {human_age(a['age']):>6}  {fact_marker(r) or '·'} "
+                  f"{r['predicate']} = {str(r['value'])[:88]}")
+    if b["changed"]:
+        print(paint("  ▸ άλλαξε πρόσφατα", "cyan"))
+        for ch in b["changed"][:limit]:
+            r = ch["row"]
+            print(f"    {human_age(ch['days_ago']):>6}  ✗ {r['predicate']} = {str(r['value'])[:76]}")
 
 
 def main(argv=None) -> int:
@@ -594,12 +866,38 @@ def main(argv=None) -> int:
             closed = ", ".join(r["closed"]) or "—"
             print(f"+ {r['id']} (έκλεισε: {closed})")
     elif args.cmd == "show":
-        for r in led.active(args.scope, args.subject, args.as_of):
-            print(f"{r['id']}  {r['scope']}/{r['subject']} · {r['predicate']} = {r['value']}  [{r['confidence']}] {r['valid_from']}")
+        rows = led.active(args.scope, args.subject, args.as_of)
+        if not rows:
+            where = f" στις {args.as_of}" if args.as_of else ""
+            print(f"κανένα ενεργό fact{where}")
+        else:
+            if args.as_of:
+                print(paint(f"— ό,τι ίσχυε στις {args.as_of} —", "dim"))
+            w1 = max(dwidth(r["id"]) for r in rows)
+            w2 = max(dwidth(f"{r['scope']}/{r['subject']}") for r in rows)
+            w3 = max(dwidth(r["predicate"]) for r in rows)
+            for r in rows:
+                mark = fact_marker(r)
+                head = (f"{paint(pad(r['id'], w1), 'dim')}  "
+                        f"{pad(r['scope'] + '/' + r['subject'], w2)} · "
+                        f"{paint(pad(r['predicate'], w3), 'cyan')}")
+                val = (mark + " " if mark else "") + r["value"]
+                print(f"{head} = {val}  [{r['confidence']}] {paint(r['valid_from'], 'dim')}")
+                if args.source:
+                    print(f"{' ' * 2}↳ {r['source']}")
     elif args.cmd == "history":
-        for r in led.history(args.subject, args.scope, args.predicate):
+        rows = led.history(args.subject, args.scope, args.predicate)
+        if not rows:
+            print(f"κανένα ιστορικό για «{args.subject}»")
+        for r in rows:
             end = r["valid_to"] or "τώρα"
-            print(f"{r['id']}  {r['valid_from']} → {end}  {r['predicate']} = {r['value']}  ({r['source']})")
+            arrow = "→" if r["valid_to"] else "•"
+            print(f"{paint(r['id'], 'dim')}  {r['valid_from']} {arrow} {end}  "
+                  f"{paint(r['predicate'], 'cyan')} = {r['value'] if args.full else r['value'][:120]}")
+            if args.full:
+                print(f"   ↳ source: {r['source']}")
+                if r["superseded_by"]:
+                    print(f"   ↳ διαδέχθηκε: {r['superseded_by']}")
     elif args.cmd == "search":
         for r in led.search(args.term, args.scope):
             flag = "" if r["valid_to"] == "" else "  [ιστορικό]"
@@ -626,7 +924,9 @@ def main(argv=None) -> int:
         scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
         b = led.brief(args.topic, scopes or None, args.max_age, args.recent,
                       deep=args.deep)
-        if args.as_json:
+        if args.handover:
+            print_handover(led, b)
+        elif args.as_json:
             print(json.dumps(b, ensure_ascii=False, indent=1, default=str))
         else:
             c = b["counts"]
@@ -663,7 +963,24 @@ def main(argv=None) -> int:
     elif args.cmd == "export":
         scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
         data = led.export(scopes or None, args.include_history)
-        text = json.dumps(data, ensure_ascii=False, indent=1)
+        if args.format == "md":
+            cols = ("id", "scope", "subject", "predicate", "value", "valid_from", "valid_to")
+            out = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+            for x in data:
+                out.append("| " + " | ".join(str(x.get(c, "")).replace("|", "/")
+                                             .replace("\n", " ") for c in cols) + " |")
+            text = "\n".join(out)
+        elif args.format == "csv":
+            import io
+            buf = io.StringIO()
+            cols = list(data[0].keys()) if data else ["id"]
+            w = csv.DictWriter(buf, fieldnames=cols, lineterminator="\n")
+            w.writeheader()
+            for x in data:
+                w.writerow({c: x.get(c, "") for c in cols})
+            text = buf.getvalue().rstrip("\n")
+        else:
+            text = json.dumps(data, ensure_ascii=False, indent=1)
         if args.out:
             with open(args.out, "w", encoding="utf-8") as f:
                 f.write(text + "\n")
@@ -705,8 +1022,61 @@ def main(argv=None) -> int:
                     print(f"  · {r['scope']}/{r['subject']} · {r['predicate']} = {r['value'][:90]}  ({x['age']}ημ)")
                 if len(a["fragmented"]) > 15:
                     print(f"  … (+{len(a['fragmented']) - 15} ακόμη)")
+    elif args.cmd == "tasks":
+        scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
+        rows = led.tasks(args.topic, args.include_done)
+        if scopes:
+            want = {norm(s) for s in scopes}
+            rows = [t for t in rows if norm(t["row"]["scope"]) in want]
+        if args.as_json:
+            print(json.dumps([{"id": t["row"]["id"], "scope": t["row"]["scope"],
+                               "subject": t["row"]["subject"],
+                               "predicate": t["row"]["predicate"], **t["task"],
+                               "age": t["age"], "overdue": t["overdue"]} for t in rows],
+                             ensure_ascii=False, indent=1))
+        elif not rows:
+            print("καμία εργασία" if args.include_done else "καμία ανοιχτή εργασία ✔")
+        else:
+            subj_w = max(dwidth(t["row"]["subject"]) for t in rows)
+            label = "όλες" if args.include_done else "ανοιχτές"
+            head = f"εργασίες · {label} {len(rows)}"
+            if args.topic:
+                head += f" · «{args.topic}»"
+            print(paint(head, "bold"))
+            for t in rows:
+                r0, tk = t["row"], t["task"]
+                icon = {"requested": "▸", "approved": "✔", "blocked": "⛔",
+                        "done": "✓", "cancelled": "⊘"}.get(tk["state"], "▸")
+                style = {"blocked": "red", "done": "green", "cancelled": "dim",
+                         "approved": "green"}.get(tk["state"], "yellow")
+                line = (f"{paint(icon, style)} {pad(r0['subject'], subj_w)}  "
+                        f"{pad(tk['state'], 9)} {human_age(t['age']):>6}  {tk['text'][:64]}")
+                if t["overdue"]:
+                    line += paint(f"  ⚠ due {tk['due']}", "red")
+                print(line)
+                tail = []
+                if tk["owner"] and tk["owner"] != "agent":
+                    tail.append(f"owner {tk['owner']}")
+                if tk["evidence"]:
+                    tail.append(tk["evidence"])
+                if tail:
+                    print(f"    ↳ {' · '.join(tail)}")
+    elif args.cmd == "task":
+        try:
+            if args.task_cmd == "add":
+                r = led.task_set(args.scope, args.subject, args.verb, args.text,
+                                 args.owner, args.state, args.evidence, args.due, args.source)
+                pred = norm(args.verb)
+                pred = pred if pred.startswith("task.") else "task." + pred.replace(" ", "_")
+                print(f"+ {r['id']} {pred} · {norm(args.state)}")
+            else:
+                r = led.task_done(args.id, args.evidence, args.note)
+                print(paint(f"✓ {args.id} → {r['id']} (done · {args.evidence})", "green"))
+        except LedgerError as e:
+            print(f"ΣΦΑΛΜΑ: {e}", file=sys.stderr)
+            return 2
     elif args.cmd == "check":
-        probs = led.check()
+        probs = led.check(getattr(args, "deep", False))
         if probs:
             print("ΠΡΟΒΛΗΜΑΤΑ:")
             for x in probs:
