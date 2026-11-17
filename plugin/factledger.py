@@ -273,6 +273,94 @@ class Ledger:
         return {"status": "closed" if active else "added",
                 "closed": [r["id"] for r in active], "id": new["id"], "row": new}
 
+    def merge_subject(self, old: str, new: str, scopes: list[str] | None = None,
+                      apply: bool = False) -> dict:
+        """Μεταγραφή θέματος: κάθε ενεργό fact του `old` συνεχίζει κάτω από το `new`.
+
+        Γιατί χωριστό verb: το `add` σε νέο subject ΔΕΝ κλείνει την πηγή (αλλάζει το
+        κλειδί), άρα μια «μεταγραφή» με δύο χειροκίνητες ενέργειες ανά fact αφήνει
+        διπλές αλήθειες μόλις ξεχαστεί το ένα σκέλος. Εδώ τα δύο σκέλη γίνονται ατομικά
+        με ένα save, και η μεταγραφή **αρνείται** να τρέξει όταν θα έφερνε δύο
+        διαφορετικές τιμές στο ίδιο (scope, predicate) — «add ≠ close» σε κώδικα.
+        """
+        old, new = norm(old), norm(new)
+        if not old or not new:
+            raise LedgerError("merge-subject: χρειάζονται και τα δύο subjects")
+        if old == new:
+            raise LedgerError("merge-subject: το παλιό και το νέο subject είναι ίδια")
+        want = {norm(s) for s in scopes} if scopes else None
+        ref = today()
+        src_rows = [r for r in self.rows if r["valid_to"] == "" and norm(r["subject"]) == old
+                    and (want is None or norm(r["scope"]) in want)]
+        if not src_rows:
+            raise LedgerError(f"merge-subject: κανένα ενεργό fact στο {old}")
+
+        collisions: list[dict] = []
+        seen: dict[tuple, dict] = {}
+        for r in src_rows:
+            k = (norm(r["scope"]), self._canon_predicate(r["predicate"]))
+            if k in seen:
+                collisions.append({"kind": "duplicate_in_source", "id": r["id"],
+                                   "other": seen[k]["id"], "predicate": r["predicate"],
+                                   "value": r["value"], "other_value": seen[k]["value"]})
+            else:
+                seen[k] = r
+
+        redundant: list[dict] = []
+        for r in src_rows:
+            pred = self._canon_predicate(r["predicate"])
+            tgt = [t for t in self.rows if t["valid_to"] == "" and norm(t["scope"]) == norm(r["scope"])
+                   and norm(t["subject"]) == new and self._canon_predicate(t["predicate"]) == pred]
+            if not tgt:
+                continue
+            if norm(tgt[0]["value"]) == norm(r["value"]):
+                redundant.append({"id": r["id"], "target": tgt[0]["id"]})
+            else:
+                collisions.append({"kind": "value_conflict", "id": r["id"],
+                                   "target": tgt[0]["id"], "predicate": r["predicate"],
+                                   "value": r["value"], "other_value": tgt[0]["value"]})
+
+        plan = [{"id": r["id"], "scope": r["scope"], "predicate": r["predicate"],
+                 "value": r["value"], "valid_from": r["valid_from"]} for r in src_rows]
+        out = {"from": old, "to": new, "ref": ref, "plan": plan,
+               "redundant": redundant, "conflicts": collisions}
+        if collisions:
+            out["status"] = "conflict"
+            return out
+        if not apply:
+            out["status"] = "dry-run"
+            return out
+
+        red_ids = {x["id"] for x in redundant}
+        added: list[str] = []
+        closed: list[str] = []
+        for r in src_rows:
+            r["valid_to"] = ref
+            r["source"] = f"{r['source']} · merged: {old} → {new}"
+            if r["id"] in red_ids:
+                r["superseded_by"] = ""
+                r["source"] = f"{r['source']} · closed: υπάρχει ήδη στο {new}"
+                closed.append(r["id"])
+                continue
+            nid = self._next_id()
+            self.rows.append({
+                "id": nid, "scope": norm(r["scope"]), "subject": new,
+                "predicate": self._canon_predicate(r["predicate"]), "value": r["value"],
+                # Το valid_from γίνεται η ημερομηνία μεταγραφής, όχι η αρχική: το `check`
+                # απαιτεί η διάδοχος να ξεκινά όταν κλείνει η παλιά. Η αρχική ημερομηνία
+                # δεν χάνεται — γράφεται στο source.
+                "valid_from": ref, "valid_to": "", "superseded_by": "",
+                "source": f"{r['source']} · merged από {old} (ίσχυε από {r['valid_from'] or ref})",
+                "confidence": r["confidence"],
+            })
+            r["superseded_by"] = nid
+            added.append(nid)
+            closed.append(r["id"])
+        self.save()
+        out.update({"status": "applied", "added": added, "closed": closed,
+                    "redundant_ids": sorted(red_ids)})
+        return out
+
     def covers(self, row: dict, ref: str) -> bool:
         """Ισχύει η γραμμή την ημερομηνία ref;"""
         if row["valid_from"] and row["valid_from"] > ref:
@@ -780,6 +868,20 @@ def build_parser() -> argparse.ArgumentParser:
     au = sub.add_parser("audit", help="δομικός έλεγχος: facts που δεν ανακτώνται ή δεν ενημερώθηκαν")
     au.add_argument("--days", type=int, default=30)
     au.add_argument("--json", action="store_true", dest="as_json")
+    au.add_argument("--check", action="store_true",
+                    help="rc=1 όταν ξεπεραστούν τα όρια (για cron/watchdog)")
+    au.add_argument("--max-buried", type=int, default=0, dest="max_buried",
+                    help="όριο θαμμένων subjects (default 0)")
+    au.add_argument("--max-stale", type=int, default=None, dest="max_stale",
+                    help="όριο facts κατάστασης χωρίς επανέλεγχο (default: χωρίς όριο)")
+
+    mg = sub.add_parser("merge-subject",
+                        help="μεταγραφή θέματος: τα ενεργά facts του --from συνεχίζουν κάτω από το --to")
+    mg.add_argument("--from", dest="src_subject", required=True)
+    mg.add_argument("--to", dest="dst_subject", required=True)
+    mg.add_argument("--scopes", default=None, help="a,b — προαιρετικός περιορισμός")
+    mg.add_argument("--apply", action="store_true",
+                    help="χωρίς αυτό: dry-run (δεν γράφεται τίποτα)")
 
     cl = sub.add_parser("close", help="κλείσιμο fact χωρίς αντικαταστάτη (με λόγο)")
     cl.add_argument("id")
@@ -1043,6 +1145,45 @@ def main(argv=None) -> int:
                     print(f"  · {r['scope']}/{r['subject']} · {r['predicate']} = {r['value'][:90]}  ({x['age']}ημ)")
                 if len(a["fragmented"]) > 15:
                     print(f"  … (+{len(a['fragmented']) - 15} ακόμη)")
+        if args.check:
+            c = a["counts"]
+            fails = []
+            if c["fragmented"] > args.max_buried:
+                fails.append(f"{c['fragmented']} θαμμένα > {args.max_buried}")
+            if args.max_stale is not None and c["state_facts"] > args.max_stale:
+                fails.append(f"{c['state_facts']} χωρίς επανέλεγχο > {args.max_stale}")
+            if fails:
+                print("CHECK FAIL: " + " · ".join(fails), file=sys.stderr)
+                return 1
+            print("CHECK OK")
+    elif args.cmd == "merge-subject":
+        scopes = [s.strip() for s in (args.scopes or "").split(",") if s.strip()] or None
+        try:
+            m = led.merge_subject(args.src_subject, args.dst_subject, scopes, apply=args.apply)
+        except LedgerError as e:
+            print(f"ΣΦΑΛΜΑ: {e}", file=sys.stderr)
+            return 2
+        if m["status"] == "conflict":
+            print(f"✗ ΣΥΓΚΡΟΥΣΗ — δεν γράφτηκε τίποτα: {m['from']} → {m['to']}", file=sys.stderr)
+            for k in m["conflicts"]:
+                other = k.get("other") or k.get("target") or "—"
+                print(f"  · {k['kind']}: {k['id']} ({k['predicate']} = {str(k['value'])[:60]})"
+                      f" ↔ {other} ({str(k.get('other_value', ''))[:60]})", file=sys.stderr)
+            if any(k["kind"] == "value_conflict" for k in m["conflicts"]):
+                print("  → κράτα ρητά τη μία αλήθεια (close με λόγο) και ξανατρέξε", file=sys.stderr)
+            return 2
+        red = {x["id"] for x in m["redundant"]}
+        moves = [p for p in m["plan"] if p["id"] not in red]
+        if m["status"] == "dry-run":
+            print(f"DRY-RUN {m['from']} → {m['to']}: {len(moves)} μεταγραφές"
+                  f" · {len(m['redundant'])} redundant (κλείσιμο χωρίς νέο fact) · 0 συγκρούσεις")
+            for p in m["plan"]:
+                tag = " (= υπάρχει ήδη)" if p["id"] in red else ""
+                print(f"  · {p['scope']} · {p['predicate']} = {str(p['value'])[:80]}{tag}")
+            print("  δεν γράφτηκε τίποτα — ξανατρέξε με --apply")
+        else:
+            print(f"✓ {m['from']} → {m['to']}: +{len(m['added'])} νέα / ⊘{len(m['closed'])} έκλεισαν"
+                  f" (εκ των οποίων {len(m['redundant_ids'])} redundant)")
     elif args.cmd == "tasks":
         scopes = [x for x in (args.scopes or "").split(",") if x.strip()]
         rows = led.tasks(args.topic, args.include_done)
