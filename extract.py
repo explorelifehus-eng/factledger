@@ -89,9 +89,40 @@ def role_labels(roles: list[str] | None) -> tuple[str, str, str, str]:
     return ROLE_LABEL.get((roles or ["user"])[0], ROLE_LABEL["user"])
 
 
-def system_prompt(scopes: list[str], roles: list[str] | None = None) -> str:
+def existing_topics(led: "Ledger", scopes: list[str], limit: int = 90,
+                    max_chars: int = 1500) -> str:
+    """Τα subjects που ΥΠΑΡΧΟΥΝ ήδη, ώστε ο εξαγωγέας να τα επαναχρησιμοποιεί.
+
+    Χωρίς αυτό κάθε παρτίδα εφευρίσκει παραλλαγή (`car.beetle.part` δίπλα σε
+    `car.beetle2003`) και το θέμα σπάει σιωπηλά — το `brief` δεν τα ενώνει.
+    """
+    seen: list[str] = []
+    rows = []
+    for r in led.rows:
+        if r.get("valid_to"):
+            continue
+        if scopes and r["scope"] not in scopes:
+            continue
+        rows.append(r)
+    rows.sort(key=lambda r: (r.get("valid_from") or ""), reverse=True)
+    for r in rows:
+        key = f'{r["scope"]}/{r["subject"]}'
+        if key not in seen:
+            seen.append(key)
+    out, used = [], 0
+    for key in seen[:limit]:
+        if used + len(key) + 2 > max_chars:
+            break
+        out.append(key)
+        used += len(key) + 2
+    return ", ".join(out)
+
+
+def system_prompt(scopes: list[str], roles: list[str] | None = None,
+                  topics: str = "") -> str:
     msgs_label, who_nom, who_gen, stated_rule = role_labels(roles)
     return (SYSTEM_PROMPT.replace("{scopes}", ", ".join(scopes))
+            .replace("{topics}", topics or "(κανένα ακόμη)")
             .replace("{msgs_label}", msgs_label)
             .replace("{who_nom}", who_nom)
             .replace("{who_gen}", who_gen)
@@ -130,6 +161,13 @@ SYSTEM_PROMPT = """Είσαι εξαγωγέας ΔΙΑΡΚΩΝ γεγονότω
   · λοιπά trading (θέση, έξοδος, στρατηγική) → crypto
   ΠΟΤΕ «user», «other» ή scope εκτός λίστας.
 - subject: πεζά με τελείες, π.χ. product.70x70, account.github, pricing.rule.
+  **ΕΠΑΝΑΧΡΗΣΗ ΘΕΜΑΤΟΣ (υποχρεωτικό)**: αυτά τα subjects υπάρχουν ήδη στο ledger
+  για τα scopes σου — {topics}.
+  Αν η έννοια καλύπτεται από ένα από αυτά, γράψε ΑΚΡΙΒΩΣ το ίδιο subject (ίδιο scope,
+  ίδιο subject), όχι παραλλαγή ή συντομευμένη εκδοχή του. Νέο subject μόνο όταν κανένα
+  δεν είναι ισοδύναμο — και τότε περιγραφικό όνομα θέματος (`car.beetle2003`,
+  `style.tasks`), ΠΟΤΕ ταυτότητα ή παραγόμενο κλειδί (`note.<hash>`, `session.<id>`,
+  γυμνό hex/uuid): τέτοια subjects δεν ανακτώνται με `brief <θέμα>` και χάνονται.
   **Ειδικό ως προς το πλαίσιο**: αν η ίδια έννοια ισχύει ΑΛΛΙΩΣ σε άλλο πλαίσιο, βάλε το
   πλαίσιο ως τελευταίο τμήμα — trade.sl.cex ≠ trade.sl.dex, exit.tp.dex ≠ exit.tp.cex.
   Δύο διαφορετικές αλήθειες με κοινό κλειδί: η δεύτερη κλείνει την πρώτη και χάνεται αλήθεια.
@@ -269,6 +307,21 @@ def parse_llm_response(raw: str) -> dict:
         raise LLMError(f"το content δεν είναι έγκυρο JSON: {content[:200]!r}") from e
 
 
+_TOPICS_CACHE: dict = {}
+
+
+def _topics_for(cfg: dict, scopes: list[str]) -> str:
+    """Το topics index μία φορά ανά (db, scopes) — μη ξαναδιαβάζεται σε κάθε παρτίδα."""
+    key = (cfg.get("db"), tuple(scopes))
+    if key not in _TOPICS_CACHE:
+        try:
+            _TOPICS_CACHE[key] = existing_topics(Ledger(cfg["db"], cfg.get("aliases")), scopes)
+        except Exception as e:                                  # ποτέ να μην κόψει την εξαγωγή
+            print(f"  ΠΡΟΣΟΧΗ: δεν φτιάχτηκε το topics index ({e}) — συνεχίζω χωρίς αυτό")
+            _TOPICS_CACHE[key] = ""
+    return _TOPICS_CACHE[key]
+
+
 def call_llm(cfg: dict, env: dict, scopes: list[str], text: str,
              roles: list[str] | None = None) -> dict:
     api = cfg["api"]
@@ -278,7 +331,7 @@ def call_llm(cfg: dict, env: dict, scopes: list[str], text: str,
     body = json.dumps({
         "model": api["model"],
         "messages": [
-            {"role": "system", "content": system_prompt(scopes, roles)},
+            {"role": "system", "content": system_prompt(scopes, roles, _topics_for(cfg, scopes))},
             {"role": "user", "content": f"{role_labels(roles)[0]}:\n" + text},
         ],
         "temperature": 0,

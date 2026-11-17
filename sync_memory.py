@@ -55,9 +55,20 @@ def parse_generated(text: str) -> list[str]:
 
 
 def is_generated_noise(line: str) -> bool:
-    """Σημείωση του ίδιου του sync (όχι περιεχόμενο του χρήστη)."""
+    """Σημείωση/επικεφαλίδα του ίδιου του sync (όχι περιεχόμενο του χρήστη).
+
+    Οι τρεις τελευταίες μορφές είναι το ίδιο πράγμα με το `… (+N ακόμη)`: γραμμές
+    που ΠΑΡΑΓΕΙ ο generator. Χωρίς αυτές, το επόμενο sync τις εισάγει ως facts
+    `handnote/note.<hash>` — έτσι γεννήθηκαν 18 «θαμμένα» subjects (17/11).
+    """
     s = line.strip()
-    return s.startswith("…") or s.startswith("...") or "ακόμη, δες `factledger show`" in s
+    if s.startswith("…") or s.startswith("...") or "ακόμη, δες `factledger show`" in s:
+        return True
+    if s.startswith("ΠΑΡΑΓΟΜΕΝΟ από"):
+        return True
+    if len(s) > 4 and s.startswith("—") and s.endswith("—"):
+        return True          # «— ανοιχτές εργασίες (όλα τα profiles) —»
+    return s in ("§", "---")
 
 
 def hand_edits(existing: str, snapshot: str) -> list[str]:
