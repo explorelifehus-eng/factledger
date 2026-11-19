@@ -57,6 +57,39 @@ python factledger.py compile --budget 600 --out MEMORY.md
 This is the payoff. The compiled view stays stable as the ledger grows; the rest
 stays reachable via `show`/`search`. The prompt does not bloat.
 
+### 6. Re-home a topic (`merge-subject`)
+
+`add` on a different subject does **not** close the old one — the key changed, so
+the old value would stay "active" forever. Re-homing is therefore two moves per
+fact, and doing them by hand loses one half as soon as attention slips.
+`merge-subject` does both atomically:
+
+```bash
+# dry-run (default): prints what would move, writes nothing
+python factledger.py merge-subject --from car.vehicle --to car.beetle2003
+
+# apply, optionally limited to some scopes
+python factledger.py merge-subject --from car.vehicle --to car.beetle2003 --scopes user --apply
+```
+
+It refuses (exit 2) when the target already holds a *different* value for the same
+`predicate` — it never picks a winner. When the target already holds the *same*
+value, the source row is closed without writing a duplicate. The new row starts
+today (the integrity check requires a successor to start when its predecessor
+closes) and the original date is kept in `source` as `ίσχυε από …`.
+
+### 7. Gate a cron job (`audit --check`)
+
+`audit` alone always exits 0, so a scheduled job can print "18 buried" forever and
+nobody acts. With a threshold it becomes a trigger:
+
+```bash
+python factledger.py audit --check                    # rc=1 if any buried subject
+python factledger.py audit --check --max-stale 20     # rc=1 if >20 state facts unreviewed
+```
+
+`CHECK FAIL: …` goes to stderr with the reason; `CHECK OK` and rc=0 otherwise.
+
 ## The automation loop
 
 Two stdlib tools close the cycle:
