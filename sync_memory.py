@@ -71,10 +71,30 @@ def is_generated_noise(line: str) -> bool:
     return s in ("§", "---")
 
 
+def looks_like_fact_line(line: str) -> bool:
+    """Γραμμή με τη ΜΟΡΦΗ της compiled όψης: `- <subject> · <predicate> = <value>`.
+
+    Μια τέτοια γραμμή ΔΕΝ εισάγεται ποτέ ως handnote. Όταν το snapshot λείπει ή
+    έχει μείνει πίσω, η ίδια μας η όψη ξαναγράφεται ως `note.<hash>` κάτω από
+    subject-ταυτότητα — δηλαδή «θαμμένη» αλήθεια που δεν ανακτάται (17/11: 18
+    subjects, 21/11: 5). Ό,τι χειροκίνητο κρατούσε πραγματικό νόημα γράφεται ως
+    πρόζα ή ως typed fact με `factledger add` — όχι ως γραμμή της όψης.
+    """
+    s = line.strip()
+    return s.startswith("- ") and " · " in s and " = " in s
+
+
 def hand_edits(existing: str, snapshot: str) -> list[str]:
-    """Γραμμές στο υπάρχον αρχείο που ΔΕΝ υπάρχουν στην τελευταία παραγωγή."""
-    old = set(parse_generated(snapshot)) if snapshot else set()
-    new = [line for line in parse_generated(existing) if line not in old]
+    """Γραμμές στο υπάρχον αρχείο που ΔΕΝ υπάρχουν στην τελευταία παραγωγή.
+
+    Χωρίς baseline ΔΕΝ γίνεται ανίχνευση: με κενό snapshot κάθε γραμμή της όψης
+    φαίνεται «χειροκίνητη» και το store γεμίζει με τα δικά μας facts ως handnotes.
+    """
+    if not (snapshot or "").strip():
+        return []
+    old = set(parse_generated(snapshot))
+    new = [line for line in parse_generated(existing)
+           if line not in old and not looks_like_fact_line(line)]
     if new:
         return new
     return [c.strip() for c in existing.split("§")
@@ -82,12 +102,28 @@ def hand_edits(existing: str, snapshot: str) -> list[str]:
             and c.strip() not in (snapshot or "").split("§")]
 
 
+def view_subject(target: str) -> str:
+    """Ανακτήθηκε subject για χειροκίνητες γραμμές: `view.<profile>`.
+
+    Το `note.<hash>` ήταν subject-ταυτότητα — το `audit` το έλεγε «θαμμένο» και
+    το `brief` δεν το έβρισκε ποτέ, άρα η γνώση του χρήστη χανόταν σιωπηλά.
+    """
+    d = os.path.dirname(os.path.abspath(target))
+    if os.path.basename(d).lower() == "memories":
+        name = os.path.basename(os.path.dirname(d))
+        if name.lower() == "hermes":
+            name = "default"
+        return f"view.{name}"
+    return "view.unknown"
+
+
 def import_handnotes(led: Ledger, target: str, lines: list[str]) -> list[str]:
     """Χειροκίνητες γραμμές → γεγονότα. Idempotent: ίδια γραμμή → ίδιο κλειδί."""
     imported = []
+    subject = view_subject(target)
     for line in lines:
         h = hashlib.sha1(line.encode("utf-8")).hexdigest()[:8]
-        r = led.add(scope="handnote", subject=f"note.{h}", predicate="text", value=line,
+        r = led.add(scope="handnote", subject=subject, predicate=f"note.{h}", value=line,
                     source=f"{os.path.basename(target)} — χειροκίνητη προσθήκη",
                     confidence="stated")
         if r["status"] != "unchanged":
@@ -135,6 +171,9 @@ def render(led: Ledger, target: dict) -> str:
                 tk, r0 = t["task"], t["row"]
                 verb = r0["predicate"].split(".", 1)[-1]
                 tail = tk["state"] + (f", due {tk['due']}" if tk["due"] else "")
+                nw = t.get("newer")
+                if nw:
+                    tail += f", ⚠ νεότερο {nw['id']}"
                 line = f"- ▸ {r0['subject']} · {verb} = {tk['text'][:58]} [{tail}]"
                 if spent + len(line) + SEP_LEN > tbudget:
                     break

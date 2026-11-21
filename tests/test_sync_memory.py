@@ -27,15 +27,19 @@ class TestGeneratedVsHanded(unittest.TestCase):
         existing = SEP.join(["- a · p = 1", "… (+5 ακόμη, δες `factledger show`)"]) + "\n"
         self.assertEqual(hand_edits(existing, snapshot), [])
 
-    def test_hand_edits_still_catches_a_real_addition(self):
+    def test_fact_shaped_addition_is_not_imported(self):
+        """ΑΛΛΑΓΗ ΣΥΜΒΟΛΑΙΟΥ 21/11/2026: ό,τι έχει μορφή γραμμής της όψης δεν εισάγεται.
+
+        Παλιά μια τέτοια γραμμή γινόταν `note.<hash>` (θαμμένο fact). Στην πράξη
+        δεν ήταν ποτέ χειροκίνητη προσθήκη: ήταν drift του snapshot, που ξαναέγραφε
+        παλιές αλήθειες ως νέα facts. Χειροκίνητη γνώση γράφεται ως πρόζα ή με `add`.
+        """
         snapshot = SEP.join(["- a · p = 1"]) + "\n"
         existing = SEP.join(["- a · p = 1", "- b · p = 2"]) + "\n"
-        self.assertEqual(hand_edits(existing, snapshot), ["- b · p = 2"])
+        self.assertEqual(hand_edits(existing, snapshot), [])
 
-    def test_hand_edits_catches_free_text_note(self):
-        snapshot = ""
-        existing = "κάτι που έγραψε ο χρήστης με το χέρι"
-        self.assertEqual(hand_edits(existing, snapshot), ["κάτι που έγραψε ο χρήστης με το χέρι"])
+    def test_no_baseline_means_no_detection(self):
+        self.assertEqual(hand_edits("κάτι που έγραψε ο χρήστης με το χέρι", ""), [])
 
     def test_parse_generated_only_takes_dash_lines(self):
         text = SEP.join(["- a · p = 1", "… (+1 ακόμη)", "ελεύθερο κείμενο"])

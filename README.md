@@ -74,6 +74,27 @@ python factledger.py brief car.beetle2003 --handover   # compact session-start c
 `⛔` prohibition, `§` rule, `✎` correction, `▸` open task, `✓` closed task —
 rules and prohibitions are emitted first, and task evidence stays out of the prompt.
 
+An **overdue** task that has a *newer* fact on the same subject is marked
+`⚠ νεότερο f0xxxx (date)`: the event was written down but the request was never
+closed, so the task list must not present it as still live. Deliberately narrow —
+only overdue tasks are checked, because a marker that always fires stops being read.
+
+## Recall never lies by omission
+
+`brief <topic>` matches `scope|subject|predicate`, so a fact about the topic that
+lives under *another* subject (and only mentions the term inside its value) would
+silently narrow the answer — the agent sees 44 live facts and answers as if that
+were everything. So `brief` counts those value-only matches and ends with a pointer:
+
+```
+— σχετικά αλλού: 25 facts αναφέρουν «factledger» μόνο στην τιμή (memory, hackathon, …)
+  — πλήρες: brief factledger --deep
+```
+
+If a topic has no direct hits at all, the same count is reported instead of
+«κανένα fact», and `--deep` returns the wider set (44 → 70 live facts on the
+production ledger). No silent narrowing, no second store, no scoring.
+
 ```bash
 python factledger.py export --format md|csv|json   # human, spreadsheet, machine
 python factledger.py check --deep                  # hand edits, broken chains, duplicate rows

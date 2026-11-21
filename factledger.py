@@ -517,12 +517,60 @@ class Ledger:
                     changed.append({"row": r, "days_ago": d})
         active.sort(key=lambda x: (x["row"]["valid_from"] or "", x["row"]["id"]), reverse=True)
         changed.sort(key=lambda x: (x["row"]["valid_to"], x["row"]["id"]), reverse=True)
+        for a in active:
+            if is_task(a["row"]["predicate"]):
+                tk = parse_task(a["row"]["value"])
+                over = bool(tk["due"]) and tk["due"] < ref and tk["state"] not in TASK_DONE
+                nw = (self.newer_facts(a["row"]["subject"], a["row"]["valid_from"], ref)
+                      if over else [])
+                a["newer"] = nw[0] if nw else None
+        # «Υπάρχει και αλλού»: facts που αναφέρουν τον όρο μόνο στην ΤΙΜΗ. Χωρίς αυτό,
+        # ένα `brief <έργο>` δείχνει πλήρες ενώ το θέμα ζει κάτω από άλλο subject
+        # (μετρημένο 21/11/2026: 44 ενεργά vs 70 με --deep) και η απάντηση βγαίνει παλιά.
+        related = {"facts": 0, "topics": [], "subjects": []}
+        if t and not deep:
+            hit_ids = {r["id"] for r in hit}
+            counts: dict[str, int] = {}
+            subjects: dict[str, str] = {}
+            for r in self.rows:
+                if r["id"] in hit_ids or not self.covers(r, ref):
+                    continue
+                if want and norm(r["scope"]) not in want:
+                    continue
+                if t not in norm(r["value"]):
+                    continue
+                related["facts"] += 1
+                top = norm(r["subject"]).split(".")[0] or "—"
+                counts[top] = counts.get(top, 0) + 1
+                subjects.setdefault(norm(r["subject"]), r["subject"])
+            related["topics"] = [k for k, _ in sorted(counts.items(), key=lambda kv: -kv[1])][:5]
+            related["subjects"] = list(subjects.values())[:5]
         return {
             "topic": topic, "ref": ref, "active": active, "changed": changed,
+            "related": related,
             "counts": {"active": len(active),
                        "stale": sum(1 for a in active if a["stale"]),
                        "changed": len(changed)},
         }
+
+    def newer_facts(self, subject: str, after: str, ref: str | None = None) -> list[dict]:
+        """Ενεργά facts του ΙΔΙΟΥ subject με `valid_from` μετά το `after`.
+
+        Είναι η ένδειξη ότι μια εργασία ξεπεράστηκε από γεγονός: το γεγονός γράφτηκε
+        αργότερα στο ίδιο θέμα, άρα η εργασία μάλλον έκλεισε στη ζωή αλλά όχι στο
+        ledger. Δεν αποφασίζει — δείχνει το id για να κριθεί.
+
+        Χρησιμοποιείται ΜΟΝΟ σε overdue εργασίες: στο ενεργό store το «νεότερο fact
+        στο ίδιο subject» έβγαινε 3/3 φορές εκτός θέματος (τιμολόγηση, απόφαση
+        παρακολούθησης) — ένα σήμα που «βρίσκει» πάντα παύει να διαβάζεται.
+        """
+        ref = ref or today()
+        want = norm(subject)
+        out = [r for r in self.rows
+               if norm(r["subject"]) == want and self.covers(r, ref)
+               and not is_task(r["predicate"]) and (r["valid_from"] or "") > after]
+        out.sort(key=lambda r: (r["valid_from"] or "", r["id"]), reverse=True)
+        return out
 
     def topics(self, scopes: list[str] | None = None, ref: str | None = None,
                stale_days: int = 30) -> list[dict]:
@@ -685,7 +733,11 @@ class Ledger:
             except (ValueError, TypeError):
                 age = None
             overdue = bool(t["due"]) and t["due"] < ref and t["state"] not in TASK_DONE
-            out.append({"row": r, "task": t, "age": age, "overdue": overdue})
+            newer = None
+            if overdue:
+                nw = self.newer_facts(r["subject"], r["valid_from"], ref)
+                newer = nw[0] if nw else None
+            out.append({"row": r, "task": t, "age": age, "overdue": overdue, "newer": newer})
         out.sort(key=lambda x: (x["overdue"] is False, x["row"]["subject"], x["row"]["predicate"]))
         return out
 
@@ -936,6 +988,9 @@ def print_handover(led: "Ledger", b: dict, limit: int = 6) -> None:
                     f"{tk['text'][:64]}")
             if t["overdue"]:
                 line += f"  ⚠ due {tk['due']}"
+            nw = t.get("newer")
+            if nw:
+                line += f"  ⚠ νεότερο {nw['id']} ({nw['valid_from']})"
             if tk["evidence"]:
                 line += f"  ↳ {tk['evidence'][:40]}"
             print(line)
@@ -1055,6 +1110,10 @@ def main(argv=None) -> int:
             c = b["counts"]
             if not c["active"] and not c["changed"]:
                 print(f"κανένα fact για «{args.topic}» — δοκίμασε `factledger topics`")
+                rel = b.get("related") or {"facts": 0, "topics": []}
+                if rel["facts"]:
+                    print(f"… αλλά {rel['facts']} facts το αναφέρουν στην τιμή"
+                          f" ({', '.join(rel['topics'])}) — δοκίμασε --deep")
             else:
                 print(f"brief «{b['topic']}» · {b['ref']} — {c['active']} ενεργά"
                       f" ({c['stale']} παλιά) · {c['changed']} αλλαγές σε {args.recent} ημ.")
@@ -1064,7 +1123,14 @@ def main(argv=None) -> int:
                     tail = f"  [{age}ημ]" if age is not None else ""
                     if a["stale"]:
                         tail += " — παλιό, επαλήθευσε"
+                    nw = a.get("newer")
+                    if nw:
+                        tail += f"  ⚠ νεότερο fact {nw['id']} ({nw['valid_from']}) — ίσως έχει ξεπεραστεί"
                     print(f"{mark} [{r['id']}] {r['scope']}/{r['subject']} · {r['predicate']} = {r['value']}{tail}")
+                rel = b.get("related") or {"facts": 0, "topics": []}
+                if rel["facts"]:
+                    print(f"— σχετικά αλλού: {rel['facts']} facts αναφέρουν «{args.topic}» μόνο στην τιμή"
+                          f" ({', '.join(rel['topics'])}) — πλήρες: brief {args.topic} --deep")
                 if b["changed"]:
                     print(f"— άλλαξε πρόσφατα ({args.recent} ημ.):")
                     for ch in b["changed"]:
@@ -1215,6 +1281,9 @@ def main(argv=None) -> int:
                         f"{pad(tk['state'], 9)} {human_age(t['age']):>6}  {tk['text'][:64]}")
                 if t["overdue"]:
                     line += paint(f"  ⚠ due {tk['due']}", "red")
+                nw = t.get("newer")
+                if nw:
+                    line += paint(f"  ⚠ νεότερο {nw['id']} ({nw['valid_from']})", "yellow")
                 print(line)
                 tail = []
                 if tk["owner"] and tk["owner"] != "agent":
